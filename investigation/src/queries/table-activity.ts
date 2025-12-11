@@ -4,12 +4,12 @@
  */
 
 import { Effect, Console } from "effect";
-import { PgClient } from "../lib/db";
-import { printTable, printSection } from "../lib/print";
+import { SqlClient } from "@effect/sql";
+import { table as printTable, header as printSection } from "../lib/print";
 
 // Query pg_stat_user_tables for write activity since last stats reset
 const getTableWriteStats = Effect.gen(function* () {
-  const sql = yield* PgClient;
+  const sql = yield* SqlClient.SqlClient;
 
   const result = yield* sql`
     SELECT 
@@ -17,14 +17,14 @@ const getTableWriteStats = Effect.gen(function* () {
       n_tup_ins AS inserts,
       n_tup_upd AS updates,
       n_tup_del AS deletes,
-      n_tup_ins + n_tup_upd + n_tup_del AS total_writes,
+      (n_tup_ins + n_tup_upd + n_tup_del)::bigint AS total_writes,
       n_live_tup AS live_rows,
       last_autovacuum,
       last_autoanalyze
     FROM pg_stat_user_tables
     WHERE schemaname = 'public'
       AND (n_tup_ins + n_tup_upd + n_tup_del) > 0
-    ORDER BY total_writes DESC
+    ORDER BY (n_tup_ins + n_tup_upd + n_tup_del) DESC
     LIMIT 50
   `;
 
@@ -33,7 +33,7 @@ const getTableWriteStats = Effect.gen(function* () {
 
 // Query recent activity on key tables using timestamps
 const getRecentActivity = Effect.gen(function* () {
-  const sql = yield* PgClient;
+  const sql = yield* SqlClient.SqlClient;
 
   // Tables we care about for the migration
   const tables = [
@@ -42,7 +42,7 @@ const getRecentActivity = Effect.gen(function* () {
     "account_users",
     "account_subscriptions",
     "subscriptions",
-    "stripe_webhook_events",
+    "stripe_events",
     "transactions",
     "sellable_purchases",
     "lesson_views",
@@ -70,8 +70,8 @@ const getRecentActivity = Effect.gen(function* () {
           AND column_name IN ('created_at', 'updated_at')
       `;
 
-      const hasCreatedAt = columns.some((c) => c.column_name === "created_at");
-      const hasUpdatedAt = columns.some((c) => c.column_name === "updated_at");
+      const hasCreatedAt = columns.some((c) => c.columnName === "created_at");
+      const hasUpdatedAt = columns.some((c) => c.columnName === "updated_at");
 
       if (!hasCreatedAt && !hasUpdatedAt) {
         continue;
@@ -89,9 +89,9 @@ const getRecentActivity = Effect.gen(function* () {
 
       results.push({
         table_name: table,
-        last_24_hours: Number(stats.last_24_hours),
-        last_7_days: Number(stats.last_7_days),
-        last_30_days: Number(stats.last_30_days),
+        last_24_hours: Number(stats.last24Hours),
+        last_7_days: Number(stats.last7Days),
+        last_30_days: Number(stats.last30Days),
       });
     } catch (e) {
       // Table might not exist or have different structure
@@ -104,7 +104,7 @@ const getRecentActivity = Effect.gen(function* () {
 
 // Get the most recent record from each key table
 const getMostRecentRecords = Effect.gen(function* () {
-  const sql = yield* PgClient;
+  const sql = yield* SqlClient.SqlClient;
 
   const tables = [
     "users",
@@ -112,7 +112,7 @@ const getMostRecentRecords = Effect.gen(function* () {
     "account_users",
     "account_subscriptions",
     "subscriptions",
-    "stripe_webhook_events",
+    "stripe_events",
     "transactions",
     "sellable_purchases",
     "lesson_views",
@@ -135,11 +135,11 @@ const getMostRecentRecords = Effect.gen(function* () {
 
       results.push({
         table_name: table,
-        most_recent_created: record.most_recent_created
-          ? new Date(record.most_recent_created).toISOString()
+        most_recent_created: record.mostRecentCreated
+          ? new Date(record.mostRecentCreated).toISOString()
           : null,
-        most_recent_updated: record.most_recent_updated
-          ? new Date(record.most_recent_updated).toISOString()
+        most_recent_updated: record.mostRecentUpdated
+          ? new Date(record.mostRecentUpdated).toISOString()
           : null,
       });
     } catch (e) {
@@ -150,18 +150,18 @@ const getMostRecentRecords = Effect.gen(function* () {
   return results;
 });
 
-// Check stripe_webhook_events for recent activity by event type
+// Check stripe_events for recent activity by event type
 const getRecentWebhookEvents = Effect.gen(function* () {
-  const sql = yield* PgClient;
+  const sql = yield* SqlClient.SqlClient;
 
   const result = yield* sql`
     SELECT 
-      event_type,
+      stripe_type AS event_type,
       COUNT(*) AS count,
       MAX(created_at) AS most_recent
-    FROM stripe_webhook_events
+    FROM stripe_events
     WHERE created_at > NOW() - INTERVAL '30 days'
-    GROUP BY event_type
+    GROUP BY stripe_type
     ORDER BY count DESC
   `;
 
@@ -177,12 +177,12 @@ const main = Effect.gen(function* () {
   const writeStats = yield* getTableWriteStats;
   printTable(
     writeStats.map((r) => ({
-      table: r.table_name,
+      table: r.tableName,
       inserts: Number(r.inserts).toLocaleString(),
       updates: Number(r.updates).toLocaleString(),
       deletes: Number(r.deletes).toLocaleString(),
-      total_writes: Number(r.total_writes).toLocaleString(),
-      live_rows: Number(r.live_rows).toLocaleString(),
+      total_writes: Number(r.totalWrites).toLocaleString(),
+      live_rows: Number(r.liveRows).toLocaleString(),
     })),
   );
 
@@ -211,20 +211,13 @@ const main = Effect.gen(function* () {
   const webhookEvents = yield* getRecentWebhookEvents;
   printTable(
     webhookEvents.map((r) => ({
-      event_type: r.event_type,
+      event_type: r.eventType,
       count: Number(r.count).toLocaleString(),
-      most_recent: r.most_recent
-        ? new Date(r.most_recent).toISOString()
-        : "N/A",
+      most_recent: r.mostRecent ? new Date(r.mostRecent).toISOString() : "N/A",
     })),
   );
 });
 
-import { makePgPool } from "../lib/db";
+import { runWithDb } from "../lib/db";
 
-Effect.runPromise(
-  main.pipe(
-    Effect.provide(makePgPool),
-    Effect.catchAll((e) => Console.error(`Error: ${e}`)),
-  ),
-);
+runWithDb(main).catch(console.error);

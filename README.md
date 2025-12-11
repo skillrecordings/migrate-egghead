@@ -1,7 +1,7 @@
-# Kill the Rails App
+# Kill the Rails App (and egghead-next too)
 
-> **Mission**: Migrate egghead subscription handling from Rails to Coursebuilder  
-> **Status**: Investigation complete, ready to execute  
+> **Mission**: Consolidate egghead.io onto Coursebuilder - kill both Rails AND Next.js  
+> **Status**: Investigation complete, planning execution  
 > **Updated**: December 11, 2025
 
 ---
@@ -28,7 +28,40 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**What we're actually doing**: Moving webhook handlers from Rails/Sidekiq to Next.js/Inngest. The data model migration happened 3 years ago.
+**What we're actually doing**:
+
+1. Moving webhook handlers from Rails/Sidekiq to Coursebuilder/Inngest
+2. Migrating all content (courses, lessons, videos) to Coursebuilder
+3. Replacing egghead-next frontend with Coursebuilder
+4. Killing both legacy systems
+
+---
+
+## The Expanded Scope
+
+This isn't just "kill Rails" anymore. We're consolidating **three systems** into one:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           CURRENT ARCHITECTURE                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   egghead-rails (PostgreSQL)     egghead-next (Next.js)    Coursebuilder    │
+│   ┌─────────────────────────┐    ┌─────────────────────┐   ┌─────────────┐  │
+│   │ • Subscriptions         │    │ • Course pages      │   │ • New site  │  │
+│   │ • User accounts         │    │ • Lesson player     │   │ • PlanetScale│ │
+│   │ • Stripe webhooks       │◄───│ • Progress tracking │   │ • Inngest   │  │
+│   │ • Progress data         │    │ • Search            │   │ • Mux       │  │
+│   │ • Content API           │    │ • User profiles     │   │             │  │
+│   └─────────────────────────┘    └─────────────────────┘   └─────────────┘  │
+│              ▲                            │                       │          │
+│              │         GraphQL            │                       │          │
+│              └────────────────────────────┘                       │          │
+│                                                                   │          │
+│   KILL ────────────────────────────────────────────────► KEEP    │          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -151,14 +184,49 @@
 
 ## Key Numbers
 
-| Metric               | Value           | Notes                   |
-| -------------------- | --------------- | ----------------------- |
-| Active subscriptions | 3,335           | All in modern model     |
-| Legacy subscriptions | 0               | Dead since Dec 2022     |
-| Total users          | 699,318         | Need to migrate         |
-| Total accounts       | 94,679          | → Organizations         |
-| Monthly new subs     | ~93             | All go to modern model  |
-| Multi-tenant usage   | 95%+ egghead.io | Can ignore multi-tenant |
+### Subscription Data (Rails PostgreSQL)
+
+| Metric               | Value     | Notes                            |
+| -------------------- | --------- | -------------------------------- |
+| Active subscriptions | 3,335     | All in modern model              |
+| Legacy subscriptions | 0         | Dead since Dec 2022              |
+| Total users          | 699,318   | Need to migrate                  |
+| Total accounts       | 94,679    | → Organizations                  |
+| Monthly new subs     | ~93       | All go to modern model           |
+| Progress records     | 2,957,917 | series_progresses - MUST MIGRATE |
+
+### Content Data (download-egghead SQLite)
+
+| Content     | Count | Status                    |
+| ----------- | ----- | ------------------------- |
+| Courses     | 420   | 330 pro, 90 free          |
+| Lessons     | 5,132 | 5,051 published           |
+| Videos      | 7,634 | **97.5% migrated to Mux** |
+| Instructors | 134   |                           |
+| Tags        | 627   |                           |
+
+### Video Migration Status
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         MUX VIDEO MIGRATION: 97.5%                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ████████████████████████████████████████████████████░░  7,441 / 7,634     │
+│                                                                              │
+│   ✅ updated (with mux_asset_id): 6,764                                      │
+│   ⚠️  no_srt (missing subtitles): 677                                        │
+│   ❌ missing_video (source gone): 193                                        │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### What We're NOT Migrating
+
+- `session_activations` - Users can re-login, password reset OK
+- Legacy `subscriptions` table - Dead code since Dec 2022
+- `stripe_events` history - Start fresh
+- Multi-tenant support - 95%+ is egghead.io
 
 ---
 
@@ -269,70 +337,115 @@
 ```
 migrate-egghead/
 ├── README.md                    # This file
-├── course-builder/              # Coursebuilder submodule
-├── egghead-next/                # Next.js frontend (submodule)
-├── egghead-rails/               # Rails backend (submodule) - THE TARGET
+├── .beads/                      # Issue tracking (git-backed)
+├── course-builder/              # Coursebuilder submodule (TARGET)
+├── download-egghead/            # Media migration toolkit
+│   ├── egghead_videos.db        # SQLite: courses, lessons, videos, instructors
+│   ├── send-to-mux.mjs          # Mux video migration script
+│   ├── load-egghead-courses.mjs # Course data fetcher
+│   └── egghead-sql/             # SQL exports for direct import
+├── egghead-next/                # Next.js frontend (submodule) - KILL
+├── egghead-rails/               # Rails backend (submodule) - KILL
 ├── investigation/               # Effect-TS analysis toolkit
 │   └── src/
 │       ├── lib/
 │       │   ├── db.ts            # PostgreSQL connection (Rails)
-│       │   └── mysql.ts         # PlanetScale connection (Coursebuilder)
+│       │   ├── mysql.ts         # PlanetScale connection (Coursebuilder)
+│       │   └── sqlite.ts        # SQLite connection (download-egghead)
 │       └── queries/
 │           ├── subscriptions.ts # Subscription analysis
-│           ├── tenants.ts       # Multi-tenant analysis
-│           └── migration-status.ts
+│           ├── table-activity.ts # Rails DB write activity
+│           └── sqlite-explore.ts # Media DB exploration
 └── reports/
-    ├── STRIPE_WEBHOOK_MIGRATION.md    # Detailed webhook migration guide
+    ├── STRIPE_WEBHOOK_MIGRATION.md    # Webhook migration guide
     ├── COURSEBUILDER_SCHEMA_ANALYSIS.md # Target schema analysis
     └── MIGRATION_DATA_REPORT.md       # Full data analysis
 ```
 
 ---
 
-## What We're NOT Doing
+## Beads (Issue Tracking)
 
-1. **Migrating legacy `subscriptions` table** - Dead. 0 active. Ignore it.
-2. **Multi-tenant support** - 95%+ is egghead.io. Build single-tenant.
-3. **Dual-write to legacy** - Only write to modern model.
-4. **Migrating `stripe_events` history** - Start fresh in Next.js.
+Epic: `migrate-egghead-39p` - Kill egghead-rails and egghead-next
+
+| ID  | Task                                             | Priority | Status |
+| --- | ------------------------------------------------ | -------- | ------ |
+| .1  | Schema design: Map Rails models to Coursebuilder | P0       | open   |
+| .2  | User/Account migration pipeline (699K users)     | P0       | open   |
+| .3  | Subscription data migration (3,335 active)       | P0       | open   |
+| .4  | Progress data migration (3M records)             | P0       | open   |
+| .5  | Content migration: Courses, lessons, videos      | P0       | open   |
+| .6  | Stripe webhook handlers (Inngest)                | P1       | open   |
+| .7  | Video player + lesson view + search              | P1       | open   |
+| .8  | User profiles + instructor pages                 | P2       | open   |
+| .9  | Auth cutover: NextAuth + OAuth migration         | P1       | open   |
+| .10 | DNS + traffic cutover runbook                    | P1       | open   |
+
+```bash
+# Check current status
+bd ready
+
+# Start a task
+bd start migrate-egghead-39p.1
+
+# Close when done
+bd done migrate-egghead-39p.1 "Completed schema mapping"
+```
 
 ---
 
-## Next Steps
+## Zero-Downtime Strategy
 
-### Phase 1: Data Migration Script
+Based on patterns from **Designing Data-Intensive Applications** and **Building Event-Driven Microservices**:
 
-- [ ] Write Effect-TS migration script
-- [ ] Map Rails accounts → Coursebuilder Organizations
-- [ ] Map account_subscriptions → Subscription + MerchantSubscription
-- [ ] Create MerchantCustomer records from stripe_customer_id
-- [ ] Create Entitlement records from :pro roles
-- [ ] Dry run with subset
-- [ ] Full migration
+### Phase 1: Shadow Mode (Data Migration)
 
-### Phase 2: Webhook Handlers
+```
+Rails (PRIMARY) ──────────────────────────────────────────────────────────────►
 
-- [ ] Implement `customer.subscription.created` in Coursebuilder
-- [ ] Implement `customer.subscription.updated` with 5-sec delay
-- [ ] Implement `customer.subscription.deleted`
-- [ ] Implement `invoice.payment_succeeded` with 1-min delay
-- [ ] Add ConvertKit integration
-- [ ] Add Customer.io integration
-- [ ] Add Discourse logout on cancel
+Coursebuilder   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+                │
+                └─ Bulk import users, accounts, subscriptions, progress
+                   (one-time, can run multiple times to catch up)
+```
 
-### Phase 3: Dual Write
+### Phase 2: Dual Write (Webhooks)
 
-- [ ] Configure Stripe to send webhooks to both endpoints
-- [ ] Add comparison logging
-- [ ] Monitor for divergence
-- [ ] Build confidence
+```
+Stripe ─────┬─────► Rails (PRIMARY) ─────► PostgreSQL
+            │                                  │
+            │                                  │ Compare
+            │                                  ▼
+            └─────► Coursebuilder (SHADOW) ─► PlanetScale
+                    Logs divergence, builds confidence
+```
 
-### Phase 4: Cutover
+### Phase 3: Flip Primary
 
-- [ ] Switch Stripe webhook URL to Next.js only
-- [ ] Migrate auth to Coursebuilder
-- [ ] Archive Rails PostgreSQL
-- [ ] Shut down Heroku
+```
+Stripe ─────┬─────► Rails (SHADOW) ──────► PostgreSQL (read-only)
+            │                                  │
+            │                                  │ Verify
+            │                                  ▼
+            └─────► Coursebuilder (PRIMARY) ► PlanetScale
+                    Quick rollback if issues
+```
+
+### Phase 4: Kill
+
+```
+Stripe ──────────► Coursebuilder ──────────► PlanetScale
+
+Rails ─────────────────────────────────────► ARCHIVED
+egghead-next ──────────────────────────────► ARCHIVED
+```
+
+### Key Principles
+
+- **No big bang** - Gradual cutover with rollback at each step
+- **Stripe webhooks as source of truth** - Event-driven sync
+- **Users can re-login** - No session migration needed
+- **Password reset flow** - Clean auth cutover
 
 ---
 
