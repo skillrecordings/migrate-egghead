@@ -1,0 +1,6 @@
+[submodule "egghead-rails"]
+	path = egghead-rails
+	url = https://github.com/skillrecordings/egghead-rails.git
+[submodule "egghead-next"]
+	path = egghead-next
+	url = https://github.com/skillrecordings/egghead-next.git
