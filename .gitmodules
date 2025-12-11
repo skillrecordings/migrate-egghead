@@ -7,3 +7,6 @@
 [submodule "course-builder"]
 	path = course-builder
 	url = https://github.com/badass-courses/course-builder.git
+[submodule "download-egghead"]
+	path = download-egghead
+	url = https://github.com/skillrecordings/download-egghead
