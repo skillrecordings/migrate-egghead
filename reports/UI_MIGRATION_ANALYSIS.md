@@ -6,6 +6,29 @@
 
 ---
 
+## Design Philosophy
+
+### CLEAN AND SIMPLE
+
+- **shadcn/ui centric** - Use shadcn components as the foundation
+- **Cut the cruft** - Don't port complexity, rebuild with simplicity
+- **Art/design carries over** - Illustrations, brand elements stay
+- **CRISP UI** - Modern, minimal, fast
+
+### SEO Non-Negotiables
+
+- **No 404s** - Every legacy URL gets a redirect
+- **Sitemap preservation** - Topic combination pages must stay (massive sitemap)
+- **Canonical URLs** - Clean URL structure with proper redirects
+
+### Simplicity Over Feature Parity
+
+- Special-case pages (instructor pages, curated search) need evaluation
+- If it's hard to maintain, find a simpler pattern
+- Data-driven over hardcoded
+
+---
+
 ## Executive Summary
 
 The Coursebuilder egghead app (`course-builder/apps/egghead`) already has **significant infrastructure** in place. The migration is less "build from scratch" and more "wire up existing capabilities + port specific UI patterns."
@@ -66,18 +89,39 @@ The Coursebuilder egghead app (`course-builder/apps/egghead`) already has **sign
 
 ### 3. Search
 
-| Feature          | egghead-next                      | Coursebuilder   | Gap                  |
-| ---------------- | --------------------------------- | --------------- | -------------------- |
-| Provider         | Typesense                         | Typesense       | Same!                |
-| InstantSearch    | Full integration                  | Not implemented | Port components      |
-| Search box       | Debounced                         | Basic           | Port component       |
-| Filters          | Topics, instructors, type, access | Not implemented | Build                |
-| Pagination       | Algolia-style                     | Not implemented | Build                |
-| Curated pages    | 35+ topic pages                   | Not implemented | Decide: keep or drop |
-| Instructor pages | 20+ pages                         | Not implemented | Decide: keep or drop |
-| URL structure    | SEO-friendly slugs                | Not implemented | Design new           |
+| Feature          | egghead-next                      | Coursebuilder   | Gap              |
+| ---------------- | --------------------------------- | --------------- | ---------------- |
+| Provider         | Typesense                         | Typesense       | Same!            |
+| InstantSearch    | Full integration                  | Not implemented | Port components  |
+| Search box       | Debounced                         | Basic           | Port component   |
+| Filters          | Topics, instructors, type, access | Not implemented | Build            |
+| Pagination       | Algolia-style                     | Not implemented | Build            |
+| Curated pages    | 35+ topic pages                   | Not implemented | **SEO CRITICAL** |
+| Instructor pages | 20+ hardcoded                     | Not implemented | **SIMPLIFY**     |
+| URL structure    | SEO-friendly slugs                | Not implemented | **PRESERVE**     |
+| Topic sitemap    | Massive combinations              | Not implemented | **MUST KEEP**    |
 
-**Effort**: MEDIUM - Same provider, port UI
+**Effort**: MEDIUM - Same provider, but SEO complexity
+
+#### Search SEO Deep Dive
+
+**The Problem**: egghead-next generates a massive sitemap from topic combinations:
+
+- `/q/react`
+- `/q/react-typescript`
+- `/q/react-resources-by-kent-c-dodds`
+- etc.
+
+These pages rank well and drive organic traffic. **Cannot break these URLs.**
+
+**Curated Pages** (35+): Hardcoded topic landing pages with custom content
+
+- Decision: Keep URLs, but make data-driven (not hardcoded components)
+
+**Instructor Pages** (20+): Hardcoded per-instructor with custom queries
+
+- Decision: **SIMPLIFY** - One dynamic `/instructors/[slug]` route
+- Redirect old `/i/[slug]` URLs to new pattern
 
 ### 4. Content Types
 
@@ -238,19 +282,43 @@ The Coursebuilder egghead app (`course-builder/apps/egghead`) already has **sign
 
 ### 3. Search Architecture
 
-**Option A**: Port InstantSearch components exactly
+**Decision**: Preserve SEO, simplify implementation
 
-- Pros: Proven UI, same provider
-- Cons: Complex URL structure, curated pages
+```
+URL Structure (PRESERVE):
+/q/[topic]                    → Topic search
+/q/[topic]-[topic2]           → Combined topics
+/q/[topic]-resources-by-[instructor] → Filtered search
 
-**Option B**: Simplified search with basic filters
+Implementation (SIMPLIFY):
+- One dynamic route: /q/[[...all]]/page.tsx
+- Parse URL segments into Typesense filters
+- Generate sitemap from topic/instructor combinations
+- NO hardcoded curated pages - data-driven only
+```
 
-- Pros: Faster to build, cleaner URLs
-- Cons: Less SEO value, fewer features
+### 4. Instructor Pages
 
-**Recommendation**: Option B for launch, add features later
+**Current State** (egghead-next):
 
-### 4. Team Management
+- 20+ hardcoded components in `search/instructors/`
+- Custom Sanity queries per instructor
+- Special layouts for Kent C. Dodds, Kyle Shevlin, etc.
+
+**New Approach** (SIMPLIFY):
+
+```
+/instructors/[slug]/page.tsx  → One dynamic route
+- Fetch instructor from DB
+- Show their courses/lessons via search
+- Same layout for everyone
+- Custom bio/avatar from instructor record
+
+Redirects:
+/i/[slug] → /instructors/[slug]  (301)
+```
+
+### 5. Team Management
 
 **Option A**: Full port of team features
 
@@ -263,6 +331,36 @@ The Coursebuilder egghead app (`course-builder/apps/egghead`) already has **sign
 - Cons: Some users affected
 
 **Recommendation**: Option B - defer to post-launch
+
+### 6. UI Component Strategy
+
+**shadcn/ui First**:
+
+```typescript
+// DON'T port complex egghead-next components
+// DO use shadcn primitives
+
+// Example: Pricing card
+import { Card, CardHeader, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+
+// NOT: import { PricingWidget } from "egghead-next/components/pricing"
+```
+
+**What to Carry Over**:
+
+- Illustrations and artwork
+- Brand colors (as CSS variables)
+- Typography scale
+- Logo/icons
+
+**What to Leave Behind**:
+
+- Complex component hierarchies
+- XState machines (use React state)
+- Multiple layout variants (pick one)
+- Hardcoded special cases
 
 ---
 
@@ -317,16 +415,115 @@ course-builder/apps/egghead/src/app/api/
 
 ---
 
+## Redirect Strategy (SEO Critical)
+
+### URL Mapping
+
+```
+LESSONS (high traffic)
+/lessons/[slug]           → /lessons/[slug]     (same, no redirect needed)
+
+COURSES (high traffic)
+/courses/[slug]           → /courses/[slug]     (same)
+/playlists/[slug]         → /courses/[slug]     (301 redirect)
+
+SEARCH (SEO critical - massive sitemap)
+/q/[...params]            → /q/[...params]      (same structure, MUST preserve)
+
+INSTRUCTORS
+/i/[slug]                 → /instructors/[slug] (301)
+/i/[slug]/rss.xml         → /instructors/[slug]/rss (301)
+
+USER
+/user                     → /profile            (301)
+/user/membership          → /profile/membership (301)
+/user/activity            → /profile/activity   (301)
+
+LEGACY
+/browse/[topic]           → /q/[topic]          (301)
+/s/[slug]                 → /courses/[slug]     (301, old series URLs)
+```
+
+### Implementation
+
+```typescript
+// next.config.ts
+export default {
+  async redirects() {
+    return [
+      // Instructor pages
+      {
+        source: "/i/:slug",
+        destination: "/instructors/:slug",
+        permanent: true,
+      },
+      {
+        source: "/i/:slug/rss.xml",
+        destination: "/instructors/:slug/rss",
+        permanent: true,
+      },
+
+      // Legacy URLs
+      {
+        source: "/playlists/:slug",
+        destination: "/courses/:slug",
+        permanent: true,
+      },
+      { source: "/s/:slug", destination: "/courses/:slug", permanent: true },
+      { source: "/browse/:topic", destination: "/q/:topic", permanent: true },
+
+      // User routes
+      { source: "/user", destination: "/profile", permanent: true },
+      {
+        source: "/user/:path*",
+        destination: "/profile/:path*",
+        permanent: true,
+      },
+    ];
+  },
+};
+```
+
+### Sitemap Strategy
+
+**Current**: egghead-next generates sitemap from topic combinations
+**New**: Must replicate this exactly
+
+```typescript
+// Generate sitemap entries for all topic combinations
+// This is what drives organic traffic
+
+const topics = await getTopics(); // from Typesense or DB
+const instructors = await getInstructors();
+
+const searchPages = [
+  // Single topics
+  ...topics.map((t) => `/q/${t.slug}`),
+
+  // Topic combinations (top pairs only, not all permutations)
+  ...getTopicPairs(topics).map(([a, b]) => `/q/${a.slug}-${b.slug}`),
+
+  // Topic + instructor
+  ...topics.flatMap((t) =>
+    instructors.map((i) => `/q/${t.slug}-resources-by-${i.slug}`),
+  ),
+];
+```
+
+---
+
 ## Risk Assessment
 
-| Risk                    | Likelihood | Impact | Mitigation                     |
-| ----------------------- | ---------- | ------ | ------------------------------ |
-| Progress data loss      | Medium     | High   | Thorough migration testing     |
-| Search regression       | Low        | Medium | Same provider (Typesense)      |
-| Auth issues             | Low        | High   | NextAuth already working       |
-| Stripe integration bugs | Medium     | High   | Extensive testing, shadow mode |
-| Team feature gaps       | High       | Low    | Few users, handle manually     |
-| Video player issues     | Medium     | High   | Test all lesson types          |
+| Risk                    | Likelihood | Impact   | Mitigation                          |
+| ----------------------- | ---------- | -------- | ----------------------------------- |
+| Progress data loss      | Medium     | High     | Thorough migration testing          |
+| Search regression       | Low        | Medium   | Same provider (Typesense)           |
+| Auth issues             | Low        | High     | NextAuth already working            |
+| Stripe integration bugs | Medium     | High     | Extensive testing, shadow mode      |
+| Team feature gaps       | High       | Low      | Few users, handle manually          |
+| Video player issues     | Medium     | High     | Test all lesson types               |
+| **SEO ranking drop**    | **Medium** | **High** | **Preserve URLs, proper redirects** |
+| **404 errors**          | **Low**    | **High** | **Comprehensive redirect map**      |
 
 ---
 

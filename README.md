@@ -1,8 +1,18 @@
 # Kill the Rails App (and egghead-next too)
 
 > **Mission**: Consolidate egghead.io onto Coursebuilder - kill both Rails AND Next.js  
-> **Status**: Investigation complete, planning execution  
+> **Status**: Schema design in progress  
 > **Updated**: December 11, 2025
+
+---
+
+## Design Philosophy
+
+- **shadcn/ui centric** - Use shadcn components as the foundation
+- **Cut the cruft** - Don't port complexity, rebuild with simplicity
+- **Art/design carries over** - Illustrations, brand elements stay
+- **No 404s** - Every legacy URL gets a redirect
+- **Sitemap preservation** - Topic combination pages must stay (massive SEO value)
 
 ---
 
@@ -357,9 +367,10 @@ migrate-egghead/
 │           ├── table-activity.ts # Rails DB write activity
 │           └── sqlite-explore.ts # Media DB exploration
 └── reports/
-    ├── STRIPE_WEBHOOK_MIGRATION.md    # Webhook migration guide
+    ├── STRIPE_WEBHOOK_MIGRATION.md      # Webhook migration guide
     ├── COURSEBUILDER_SCHEMA_ANALYSIS.md # Target schema analysis
-    └── MIGRATION_DATA_REPORT.md       # Full data analysis
+    ├── MIGRATION_DATA_REPORT.md         # Full data analysis
+    └── UI_MIGRATION_ANALYSIS.md         # Detailed UI gap analysis
 ```
 
 ---
@@ -487,6 +498,102 @@ pnpm tsx src/queries/migration-status.ts
 | `packages/core/src/inngest/stripe/`                            | Inngest handlers    |
 | `packages/adapter-drizzle/src/lib/mysql/schemas/commerce/`     | Commerce schemas    |
 | `packages/adapter-drizzle/src/lib/mysql/schemas/entitlements/` | Entitlement schemas |
+
+---
+
+## UI Migration: What Coursebuilder Already Has
+
+The egghead app in Coursebuilder (`course-builder/apps/egghead`) already has **significant infrastructure**:
+
+| Feature             | Status  | Notes                                     |
+| ------------------- | ------- | ----------------------------------------- |
+| Auth system         | ✅ Done | NextAuth v5 + CASL RBAC                   |
+| Content model       | ✅ Done | ContentResource (posts, lessons, courses) |
+| Video pipeline      | ✅ Done | Mux encoding, Deepgram transcription      |
+| Background jobs     | ✅ Done | Inngest                                   |
+| Search provider     | ✅ Done | Typesense (same as egghead-next!)         |
+| Egghead API sync    | ✅ Done | Bi-directional                            |
+| 27+ shared packages | ✅ Done |                                           |
+
+### What Needs Building
+
+| Feature                 | Priority | Effort | Notes                                      |
+| ----------------------- | -------- | ------ | ------------------------------------------ |
+| Video player            | P0       | Medium | Use CB's Mux player, not xstate complexity |
+| Progress tracking       | P0       | High   | 3M records to migrate                      |
+| Pro/free gating         | P0       | Low    | Wire up Entitlements                       |
+| Search UI               | P1       | Medium | Port InstantSearch components              |
+| Subscription management | P1       | Medium | Stripe portal integration                  |
+| Pricing page            | P1       | Medium | Port with shadcn                           |
+| User profile            | P2       | Low    | Basic settings                             |
+| Team management         | P3       | High   | Defer to post-launch                       |
+
+---
+
+## URL Redirect Strategy (SEO Critical)
+
+```typescript
+// next.config.ts
+export default {
+  async redirects() {
+    return [
+      // Instructors: ONE dynamic route, not 20+ hardcoded
+      {
+        source: "/i/:slug",
+        destination: "/instructors/:slug",
+        permanent: true,
+      },
+      {
+        source: "/i/:slug/rss.xml",
+        destination: "/instructors/:slug/rss",
+        permanent: true,
+      },
+
+      // Legacy content URLs
+      {
+        source: "/playlists/:slug",
+        destination: "/courses/:slug",
+        permanent: true,
+      },
+      { source: "/s/:slug", destination: "/courses/:slug", permanent: true },
+      { source: "/browse/:topic", destination: "/q/:topic", permanent: true },
+
+      // User routes
+      { source: "/user", destination: "/profile", permanent: true },
+      {
+        source: "/user/:path*",
+        destination: "/profile/:path*",
+        permanent: true,
+      },
+    ];
+  },
+};
+```
+
+### Search URLs (MUST PRESERVE)
+
+These drive organic traffic - massive sitemap from topic combinations:
+
+```
+/q/react                              → Topic search
+/q/react-typescript                   → Combined topics
+/q/react-resources-by-kent-c-dodds    → Filtered by instructor
+```
+
+**Implementation**: One dynamic route `/q/[[...all]]/page.tsx` that parses URL segments into Typesense filters.
+
+---
+
+## Technical Decisions
+
+| Decision          | Choice                     | Rationale                              |
+| ----------------- | -------------------------- | -------------------------------------- |
+| Video player      | Coursebuilder's Mux player | Simpler than porting xstate complexity |
+| Progress tracking | Build new in CB            | Clean break, migrate 3M records        |
+| Search            | Same Typesense, new UI     | Port InstantSearch components          |
+| Instructor pages  | One dynamic route          | Not 20+ hardcoded components           |
+| Team features     | Defer post-launch          | Complex, few users                     |
+| State management  | React state                | Not xstate machines                    |
 
 ---
 

@@ -1,8 +1,8 @@
-# Coursebuilder Schema Analysis
+# Schema Mapping: Rails → Coursebuilder
 
-> **Purpose**: Understand the target schema for migrating egghead subscriptions  
-> **Source**: `course-builder/packages/adapter-drizzle/src/lib/mysql/schemas/`  
-> **Generated**: December 11, 2025
+> **Purpose**: Complete schema mapping for egghead migration  
+> **Status**: In progress (bead migrate-egghead-39p.1)  
+> **Updated**: December 11, 2025
 
 ---
 
@@ -384,6 +384,304 @@ This is a fresh Coursebuilder instance. We need to:
 
 ---
 
+---
+
+## Content Migration Mapping
+
+### Rails Content Model
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         RAILS CONTENT HIERARCHY                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    Instructor (134)
+        │
+        ├── Series (420 courses)
+        │       │
+        │       └── Lessons (5,132)
+        │               │
+        │               └── lesson_views (progress)
+        │
+        └── Playlists (curated collections)
+                │
+                └── Tracklists (polymorphic join)
+                        │
+                        └── Lessons, Series, other Playlists
+```
+
+### Coursebuilder Content Model
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     COURSEBUILDER CONTENT HIERARCHY                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    User (as contributor)
+        │
+        └── ContentContribution
+                │
+                └── ContentResource (type: 'course', 'lesson', 'section', etc.)
+                        │
+                        └── ContentResourceResource (hierarchical join)
+                                │
+                                └── Child ContentResources
+```
+
+### Content Table Mapping
+
+| Rails               | →   | Coursebuilder                       | Notes                                                       |
+| ------------------- | --- | ----------------------------------- | ----------------------------------------------------------- |
+| `instructors`       | →   | `User` + `ContentContribution`      | Instructor becomes user with 'instructor' contribution type |
+| `series`            | →   | `ContentResource` (type='course')   | Course metadata in `fields` JSON                            |
+| `lessons`           | →   | `ContentResource` (type='lesson')   | Lesson metadata in `fields` JSON                            |
+| `playlists`         | →   | `ContentResource` (type='playlist') | Or skip - redirect to courses                               |
+| `tracklists`        | →   | `ContentResourceResource`           | Hierarchical join with `position`                           |
+| `lesson_views`      | →   | `ResourceProgress`                  | Progress tracking                                           |
+| `series_progresses` | →   | `ResourceProgress`                  | Course-level progress                                       |
+| `tags`              | →   | `Tag` + `ContentResourceTag`        | Same pattern                                                |
+
+### ContentResource Fields Mapping
+
+For a **lesson**:
+
+```typescript
+// Rails lesson
+{
+  id: 123,
+  guid: 'abc123',
+  slug: 'intro-to-react',
+  title: 'Introduction to React',
+  summary: 'Learn the basics...',
+  duration: 342,
+  state: 'published',
+  visibility_state: 'indexed',
+  is_pro_content: true,
+  wistia_id: 'xyz789',
+  current_video_hls_url: 'https://...',
+  instructor_id: 45,
+  series_id: 67,
+}
+
+// Coursebuilder ContentResource
+{
+  id: 'cr_newuuid',
+  type: 'lesson',
+  createdById: 'user_instructor45',
+  fields: {
+    slug: 'intro-to-react',
+    title: 'Introduction to React',
+    description: 'Learn the basics...',
+    state: 'published',
+    visibility: 'public',
+    duration: 342,
+    legacyId: 123,
+    legacyGuid: 'abc123',
+    muxPlaybackId: 'mux_playback_id',  // From Mux migration
+    muxAssetId: 'mux_asset_id',
+    access: 'pro',  // is_pro_content → access field
+  },
+}
+```
+
+For a **course** (series):
+
+```typescript
+// Rails series
+{
+  id: 67,
+  slug: 'react-fundamentals',
+  title: 'React Fundamentals',
+  description: 'Complete course...',
+  state: 'published',
+  is_complete: true,
+  instructor_id: 45,
+}
+
+// Coursebuilder ContentResource
+{
+  id: 'cr_courseuuid',
+  type: 'course',
+  createdById: 'user_instructor45',
+  fields: {
+    slug: 'react-fundamentals',
+    title: 'React Fundamentals',
+    description: 'Complete course...',
+    state: 'published',
+    legacyId: 67,
+    access: 'pro',
+  },
+}
+
+// Plus ContentResourceResource joins for lessons
+{
+  resourceOfId: 'cr_courseuuid',  // parent (course)
+  resourceId: 'cr_lessonuuid',    // child (lesson)
+  position: 1,
+}
+```
+
+---
+
+## Progress Tracking Migration
+
+### Rails Progress Model
+
+```
+lesson_views (2.9M records)
+├── user_id
+├── lesson_id
+├── segments (30-second increments watched)
+├── did_complete (boolean)
+├── collection_type, collection_id (polymorphic - course context)
+└── series_progress_id (FK)
+
+series_progresses
+├── user_id
+├── progressable_type, progressable_id (Series or Playlist)
+├── is_complete
+└── completed_at
+```
+
+### Coursebuilder Progress Model
+
+```
+ResourceProgress (composite PK: userId + resourceId)
+├── userId
+├── resourceId (ContentResource.id)
+├── completedAt (datetime, null = not complete)
+└── fields (json - for segments, etc.)
+
+LessonProgress (more granular)
+├── userId
+├── lessonId
+├── lessonSlug
+├── sectionId, moduleId (context)
+├── completedAt
+└── timestamps
+```
+
+### Progress Migration Strategy
+
+**Option A: Minimal (recommended for launch)**
+
+- Migrate only `did_complete=true` records
+- ~500K records instead of 2.9M
+- Faster migration, simpler
+
+**Option B: Full fidelity**
+
+- Migrate all lesson_views with segments
+- Store segments in `fields.segments`
+- Preserve partial progress
+
+```typescript
+// Migration transform
+const migrateProgress = (lessonView: RailsLessonView) => ({
+  userId: userIdMap[lessonView.user_id],
+  resourceId: contentIdMap[lessonView.lesson_id],
+  completedAt: lessonView.did_complete ? lessonView.updated_at : null,
+  fields: {
+    segments: lessonView.segments,
+    legacyId: lessonView.id,
+  },
+});
+```
+
+---
+
+## Gaps Requiring New Tables/Columns
+
+### 1. Instructor Profile Data
+
+Rails `instructors` table has fields not in Coursebuilder:
+
+| Field                    | Solution                        |
+| ------------------------ | ------------------------------- |
+| `bio_short`              | Store in `User.fields.bio`      |
+| `twitter`, `website`     | Store in `User.fields.social`   |
+| `percentage` (rev share) | Store in `User.fields.revShare` |
+| `profile_picture_url`    | Store in `User.image`           |
+
+### 2. Content Metadata
+
+Some Rails fields need mapping to `ContentResource.fields`:
+
+| Rails Field               | Coursebuilder Location                    |
+| ------------------------- | ----------------------------------------- |
+| `wistia_id`               | `fields.legacyWistiaId` (reference only)  |
+| `current_video_hls_url`   | `fields.muxPlaybackId` (Mux handles this) |
+| `plays_count`             | `fields.playCount` or skip (analytics)    |
+| `popularity_order`        | `fields.popularityOrder` or compute fresh |
+| `code_url`, `github_repo` | `fields.codeUrl`, `fields.githubRepo`     |
+| `transcript`              | `fields.transcript` or separate table     |
+
+### 3. Team Subscription Seats
+
+Rails tracks `quantity` on `account_subscriptions`. Coursebuilder needs:
+
+```typescript
+// In Subscription.fields
+{
+  quantity: 5,           // Number of seats
+  interval: 'year',      // Billing interval
+  currentPeriodEnd: '2025-12-31T00:00:00Z',
+}
+```
+
+### 4. Legacy ID Mapping
+
+Need to preserve Rails IDs for:
+
+- URL redirects (lesson/course slugs should work)
+- Analytics continuity
+- Support debugging
+
+Store in `fields.legacyId` on all migrated records.
+
+---
+
+## Migration Order
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         MIGRATION DEPENDENCY ORDER                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Phase 1: Foundation (no dependencies)
+├── Users (699K)
+├── EntitlementTypes (create 'pro' type)
+└── Products (create egghead subscription product)
+
+Phase 2: Organizations (depends on Users)
+├── Organizations (from accounts, 94K)
+├── OrganizationMemberships (from account_users)
+└── MerchantCustomers (from accounts.stripe_customer_id)
+
+Phase 3: Subscriptions (depends on Orgs, Products)
+├── MerchantSubscriptions (from account_subscriptions)
+├── Subscriptions (from account_subscriptions)
+└── Entitlements (derived from active subscriptions)
+
+Phase 4: Content (depends on Users)
+├── ContentResources - Instructors as Users
+├── ContentResources - Courses (from series)
+├── ContentResources - Lessons
+├── ContentResourceResource (course→lesson joins)
+├── ContentContributions (instructor→content links)
+└── Tags + ContentResourceTag
+
+Phase 5: Progress (depends on Users, Content)
+├── ResourceProgress (from lesson_views)
+└── LessonProgress (optional, more granular)
+
+Phase 6: Commerce History (optional, for records)
+├── MerchantCharges (from transactions)
+└── Purchases (from sellable_purchases)
+```
+
+---
+
 ## Appendix: Full Schema Files
 
 ### Commerce Schemas
@@ -413,3 +711,15 @@ This is a fresh Coursebuilder instance. We need to:
 - `auth/users.ts` - User accounts
 - `auth/accounts.ts` - OAuth provider accounts (NextAuth)
 - `auth/sessions.ts` - Login sessions
+
+### Content Schemas
+
+- `content/content-resource.ts` - Polymorphic content (lessons, courses, etc.)
+- `content/content-resource-resource.ts` - Hierarchical joins
+- `content/content-contribution.ts` - Creator/instructor links
+- `content/content-resource-tag.ts` - Tag associations
+
+### Progress Schemas
+
+- `progress/resource-progress.ts` - Completion tracking
+- `progress/lesson-progress.ts` - Granular lesson progress
