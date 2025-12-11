@@ -6,7 +6,7 @@
 
 **For AI agents**: Read [AGENTS.md](./AGENTS.md) first - contains critical rules and context.
 
-**TL;DR**: The subscription data model is ready, but we discovered **17 cron jobs**, **17 mailers**, and **Customer.io/Discourse integrations** that weren't in the original plan. Coursebuilder's subscription handlers are **stubs only** - they need implementation.
+**TL;DR**: The subscription data model is ready, but we discovered **17 cron jobs**, **17 mailers**, and **Customer.io integration** that weren't in the original plan. Coursebuilder's subscription handlers are **stubs only** - they need implementation.
 
 ---
 
@@ -97,8 +97,7 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
                                     │
                     ┌───────────────┴───────────────┐
                     ▼                               ▼
-            ConvertKit                      Customer.io
-            Discourse                       Mixpanel
+            Customer.io                     Mixpanel
 
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -184,10 +183,9 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
                     │   Inngest background jobs     │
                     └───────────────────────────────┘
                                     │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-            ConvertKit                      Customer.io
-            Discourse                       (Mixpanel deprecated)
+                                    │
+                                    ▼
+                              Customer.io
 
     🎉 Rails PostgreSQL archived
     🎉 Sidekiq shut down
@@ -337,12 +335,9 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
 
 ## External Integrations
 
-| Service     | On Subscribe                     | On Cancel                    |
-| ----------- | -------------------------------- | ---------------------------- |
-| ConvertKit  | Tag `paid_member`, `is_pro=true` | Remove tag, `is_pro=false`   |
-| Customer.io | Track `subscribed`, sync attrs   | Track `subscription removed` |
-| Discourse   | -                                | Force logout if loses pro    |
-| Mixpanel    | Same as Customer.io              | **Consider deprecating**     |
+| Service     | On Subscribe                   | On Cancel                    |
+| ----------- | ------------------------------ | ---------------------------- |
+| Customer.io | Track `subscribed`, sync attrs | Track `subscription removed` |
 
 ---
 
@@ -654,9 +649,7 @@ These drive organic traffic - massive sitemap from topic combinations:
 | Progress tracking     | ✅ Ready       | Schema exists, needs migration script   |
 | Entitlements          | ✅ Ready       | Fully implemented                       |
 | Organizations         | ✅ Ready       | Schema exists                           |
-| ConvertKit            | ✅ Ready       | Just needs API keys                     |
 | **Customer.io**       | **MISSING**    | Not in Coursebuilder at all             |
-| **Discourse SSO**     | **MISSING**    | Not in Coursebuilder at all             |
 
 ---
 
@@ -704,10 +697,7 @@ These drive organic traffic - massive sitemap from topic combinations:
 
 ### Phase 4: External Integrations
 
-- [ ] ConvertKit - Tag `paid_member`, sync `is_pro` (ready, needs keys)
 - [ ] **Customer.io** - Build from scratch (3 endpoints + Inngest jobs)
-- [ ] **Discourse SSO** - Build from scratch
-- [ ] Mixpanel - Port or deprecate
 - [ ] **17 transactional mailers** - Port to Resend/Postmark
 
 ### Phase 5: UI Components
