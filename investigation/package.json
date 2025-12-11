@@ -7,6 +7,7 @@
     "verify": "tsx src/queries/verify-schema.ts",
     "investigate": "tsx src/cli.ts",
     "subscriptions": "tsx src/queries/subscriptions.ts",
+    "gifts": "tsx src/queries/gifts.ts",
     "tenants": "tsx src/queries/tenants.ts",
     "webhooks": "tsx src/queries/webhooks.ts",
     "migration-readiness": "tsx src/queries/migration-readiness.ts",
