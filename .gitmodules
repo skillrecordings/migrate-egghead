@@ -4,3 +4,6 @@
 [submodule "egghead-next"]
 	path = egghead-next
 	url = https://github.com/skillrecordings/egghead-next.git
+[submodule "course-builder"]
+	path = course-builder
+	url = https://github.com/badass-courses/course-builder.git
