@@ -1,244 +1,305 @@
-# Kill the Rails App (and egghead-next too)
+# Kill egghead-rails and egghead-next
 
-> **Mission**: Consolidate egghead.io onto Coursebuilder - kill both Rails AND Next.js  
-> **Status**: Gap analysis complete - found 30+ undocumented systems  
+> **Mission**: Consolidate egghead.io onto Coursebuilder  
+> **Status**: Planning complete, ready for execution  
 > **Updated**: December 11, 2025
 
 **For AI agents**: Read [AGENTS.md](./AGENTS.md) first - contains critical rules and context.
 
-**TL;DR**: The subscription data model is ready, but we discovered **17 cron jobs**, **17 mailers**, and **Customer.io integration** that weren't in the original plan. Coursebuilder's subscription handlers are **stubs only** - they need implementation.
+---
+
+## Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [The Three Systems](#the-three-systems)
+3. [Migration Phases](#migration-phases)
+4. [Phase Details](#phase-details)
+5. [Key Numbers](#key-numbers)
+6. [Schema Mapping](#schema-mapping)
+7. [Critical Gaps & Safety](#critical-gaps--safety)
+8. [Repository Structure](#repository-structure)
+9. [Running the Toolkit](#running-the-toolkit)
 
 ---
 
-## Design Philosophy
+## Executive Summary
 
-- **shadcn/ui centric** - Use shadcn components as the foundation
+We're killing **two legacy systems** and consolidating onto Coursebuilder:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│   egghead-rails          egghead-next           Coursebuilder              │
+│   ┌─────────────┐        ┌─────────────┐        ┌─────────────┐            │
+│   │ PostgreSQL  │        │ Next.js     │        │ PlanetScale │            │
+│   │ Sidekiq     │   +    │ GraphQL     │   →    │ Inngest     │            │
+│   │ 699K users  │        │ Video player│        │ Mux         │            │
+│   └─────────────┘        └─────────────┘        └─────────────┘            │
+│        KILL                   KILL                   KEEP                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Good News
+
+**The hard part is already done.** All 3,335 active subscriptions use the modern `account_subscriptions` table. The legacy `subscriptions` table has been dead since December 2022.
+
+### Design Philosophy
+
+- **shadcn/ui centric** - Use shadcn components, not complex egghead-next patterns
 - **Cut the cruft** - Don't port complexity, rebuild with simplicity
-- **Art/design carries over** - Illustrations, brand elements stay
-- **No 404s** - Every legacy URL gets a redirect
-- **Sitemap preservation** - Topic combination pages must stay (massive SEO value)
+- **No 404s** - Every legacy URL gets a redirect (SEO critical)
+- **Zero downtime** - Gradual cutover with rollback at each step
 
 ---
 
-## The Good News
+## The Three Systems
 
-**The hard part is already done.** All subscriptions already use the modern data model.
+| System            | Role                                     | Database           | Fate     |
+| ----------------- | ---------------------------------------- | ------------------ | -------- |
+| `egghead-rails/`  | Subscriptions, webhooks, users, progress | PostgreSQL         | **KILL** |
+| `egghead-next/`   | Frontend, video player, search           | Sanity + Rails API | **KILL** |
+| `course-builder/` | Target platform                          | PlanetScale        | **KEEP** |
+
+---
+
+## Migration Phases
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CURRENT STATE                                        │
+│                         MIGRATION ROADMAP                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Legacy subscriptions table          Modern account_subscriptions table    │
-│   ┌─────────────────────────┐         ┌─────────────────────────┐           │
-│   │  68,000 records         │         │  55,000 records         │           │
-│   │  0 active               │         │  3,335 active           │           │
-│   │  All state = NULL       │         │  All new subs go here   │           │
-│   │  Last write: Dec 2022   │         │  Last write: today      │           │
-│   └─────────────────────────┘         └─────────────────────────┘           │
-│              ❌                                    ✅                         │
-│         DEAD CODE                            SOURCE OF TRUTH                 │
-│                                                                              │
+│                                                                             │
+│  Phase 0          Phase 1          Phase 2          Phase 3                │
+│  ┌────────┐       ┌────────┐       ┌────────┐       ┌────────┐             │
+│  │ SAFETY │  →    │  DATA  │  →    │WEBHOOKS│  →    │  CRON  │             │
+│  │ INFRA  │       │MIGRATE │       │HANDLERS│       │  JOBS  │             │
+│  └────────┘       └────────┘       └────────┘       └────────┘             │
+│      │                │                │                │                   │
+│      ▼                ▼                ▼                ▼                   │
+│  Testing          699K users       Stripe          17 Sidekiq              │
+│  CDC setup        3M progress      Inngest         → Inngest               │
+│  Monitoring       Content          Dual-write                              │
+│                                                                             │
+│  Phase 4          Phase 5          Phase 6                                 │
+│  ┌────────┐       ┌────────┐       ┌────────┐                              │
+│  │EXTERNAL│  →    │   UI   │  →    │CUTOVER │                              │
+│  │INTEGR. │       │COMPNTS │       │  KILL  │                              │
+│  └────────┘       └────────┘       └────────┘                              │
+│      │                │                │                                    │
+│      ▼                ▼                ▼                                    │
+│  Customer.io      Video player     DNS flip                                │
+│  17 mailers       Search UI        Auth cutover                            │
+│  Resend           Pricing          🎉 Rails dead                           │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**What we're actually doing**:
+---
 
-1. Moving webhook handlers from Rails/Sidekiq to Coursebuilder/Inngest
-2. Migrating all content (courses, lessons, videos) to Coursebuilder
-3. Replacing egghead-next frontend with Coursebuilder
-4. Killing both legacy systems
+## Phase Details
+
+### Phase 0: Safety Infrastructure
+
+**Epic**: `6y2` (Testing) + `341` (Data Integrity) + `5qr` (CDC)
+
+Before touching production data, we need:
+
+| Task                                 | Bead      | Purpose                              |
+| ------------------------------------ | --------- | ------------------------------------ |
+| Testing pyramid (Vitest, Playwright) | `6y2`     | No code ships without tests          |
+| CDC via PostgreSQL triggers          | `5qr`     | Sync changes during migration window |
+| Idempotency layer                    | `341.1-2` | Prevent duplicate Stripe processing  |
+| Reconciliation job                   | `341.4`   | Daily PG ↔ PlanetScale checksums     |
+| Webhook deduplication                | `cqi`     | Handle dual-write race conditions    |
+
+**Human Gate**: `6pv.17` - Approve migration control plane
 
 ---
 
-## The Expanded Scope
+### Phase 1: Data Migration
 
-This isn't just "kill Rails" anymore. We're consolidating **three systems** into one:
+**Epic**: `koh` + `39p.2-5`
+
+Migrate all data from Rails PostgreSQL to Coursebuilder PlanetScale:
+
+| Data                       | Records      | Bead     | Status       |
+| -------------------------- | ------------ | -------- | ------------ |
+| Users                      | 699,318      | `koh.11` | Ready        |
+| Organizations (accounts)   | 94,679       | `koh.12` | Ready        |
+| Subscriptions              | 3,335 active | `koh.13` | Ready        |
+| Progress                   | 2,957,917    | `koh.14` | Ready        |
+| Content (courses, lessons) | 420 + 5,132  | `koh.15` | 97.5% on Mux |
+| Gifts                      | ~500         | `51p`    | Ready        |
+| Teams                      | 266          | `dxh.6`  | Ready        |
+
+**Monitoring**: `c7z` - Progress backfill dashboard with stall detection
+
+**Human Gate**: `koh.17` - Approve migration before execution
+
+---
+
+### Phase 2: Webhook Handlers
+
+**Epic**: `5bk`
+
+Replace Rails Sidekiq handlers with Coursebuilder Inngest:
+
+| Event                           | Rails Delay | Bead    | Status      |
+| ------------------------------- | ----------- | ------- | ----------- |
+| `checkout.session.completed`    | None        | ✅      | Working     |
+| `customer.subscription.created` | None        | `5bk.1` | **STUB**    |
+| `customer.subscription.updated` | 5 sec       | `5bk.2` | **STUB**    |
+| `customer.subscription.deleted` | None        | `5bk.3` | **MISSING** |
+| `invoice.payment_succeeded`     | 1 min       | `5bk.4` | **STUB**    |
+
+**Why the delays?**
+
+- 5-sec on `subscription.updated`: Race condition with `checkout.session.completed`
+- 1-min on `invoice.payment_succeeded`: Wait for Stripe to finalize charge
+
+**Human Gate**: `15v` - Approve webhook handler design
+
+---
+
+### Phase 3: Cron Jobs
+
+**Epic**: `tkd`
+
+Port 17 Sidekiq-Cron jobs to Inngest:
+
+| Job                       | Frequency  | Bead     | Impact if Missing       |
+| ------------------------- | ---------- | -------- | ----------------------- |
+| StripeReconciler          | Daily      | `tkd.1`  | Missed transactions     |
+| GiftExpirationWorker      | Daily      | `tkd.2`  | Gifts never expire      |
+| RefreshSitemap            | 4 hours    | `tkd.3`  | SEO degrades            |
+| SignInTokenCleaner        | 1 minute   | `tkd.4`  | Magic links pile up     |
+| LessonPublishWorker       | 10 minutes | `tkd.5`  | Scheduled content stuck |
+| RenewalReminder           | Daily      | `tkd.6`  | No renewal emails       |
+| Revenue share calculation | Monthly    | `tkd.11` | Instructors not paid    |
+
+---
+
+### Phase 4: External Integrations
+
+**Epic**: `qk0` + `ifz`
+
+| Integration              | Beads                   | Notes                                    |
+| ------------------------ | ----------------------- | ---------------------------------------- |
+| Customer.io              | `ifz`, `qk0.1-2`, `1p8` | Track subscribed/cancelled/billed events |
+| Magic link email         | `qk0.3`                 | **PRIMARY auth method**                  |
+| Renewal/Welcome emails   | `qk0.4`                 | Revenue-affecting                        |
+| 17 transactional mailers | `qk0.5`                 | Port to Resend                           |
+
+**Human Gate**: `esr` - Approve Customer.io + email strategy
+
+---
+
+### Phase 5: UI Components
+
+**Epic**: `r52`
+
+| Component     | Bead              | Notes                                      |
+| ------------- | ----------------- | ------------------------------------------ |
+| Video player  | `r52.1`, `r52.11` | Mux player, NOT xstate complexity          |
+| Lesson view   | `r52.2`           | Player + transcript + navigation           |
+| Course view   | `r52.3`           | Lesson list + progress indicators          |
+| Search UI     | `r52.4`           | Typesense + InstantSearch, `/q/[[...all]]` |
+| Pricing page  | `r52.5`           | Stripe checkout integration                |
+| URL redirects | `r52.7`           | **SEO critical**                           |
+
+**Human Gate**: `sr4` - Approve UI architecture
+
+---
+
+### Phase 6: Cutover
+
+**Epic**: `axl` + `04y`
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           CURRENT ARCHITECTURE                               │
+│                         CUTOVER SEQUENCE                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   egghead-rails (PostgreSQL)     egghead-next (Next.js)    Coursebuilder    │
-│   ┌─────────────────────────┐    ┌─────────────────────┐   ┌─────────────┐  │
-│   │ • Subscriptions         │    │ • Course pages      │   │ • New site  │  │
-│   │ • User accounts         │    │ • Lesson player     │   │ • PlanetScale│ │
-│   │ • Stripe webhooks       │◄───│ • Progress tracking │   │ • Inngest   │  │
-│   │ • Progress data         │    │ • Search            │   │ • Mux       │  │
-│   │ • Content API           │    │ • User profiles     │   │             │  │
-│   └─────────────────────────┘    └─────────────────────┘   └─────────────┘  │
-│              ▲                            │                       │          │
-│              │         GraphQL            │                       │          │
-│              └────────────────────────────┘                       │          │
-│                                                                   │          │
-│   KILL ────────────────────────────────────────────────► KEEP    │          │
-│                                                                              │
+│                                                                             │
+│  Week 1-2: Shadow Mode                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Stripe ──┬──► Rails (PRIMARY) ──► PostgreSQL                       │   │
+│  │           │                              │                          │   │
+│  │           │                              │ Compare                  │   │
+│  │           │                              ▼                          │   │
+│  │           └──► Coursebuilder (SHADOW) ─► PlanetScale                │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│  Target: 7+ days, <0.1% divergence                                         │
+│                                                                             │
+│  Week 3: Flip Primary                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Stripe ──┬──► Rails (SHADOW) ────► PostgreSQL (read-only)          │   │
+│  │           │                              │                          │   │
+│  │           │                              │ Verify                   │   │
+│  │           │                              ▼                          │   │
+│  │           └──► Coursebuilder (PRIMARY) ► PlanetScale                │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│  Auth cutover: Password reset campaign 48h before                          │
+│                                                                             │
+│  Week 4: Kill Rails                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Stripe ────────► Coursebuilder ────────► PlanetScale               │   │
+│  │                                                                     │   │
+│  │  Rails ─────────────────────────────────► ARCHIVED                  │   │
+│  │  egghead-next ──────────────────────────► ARCHIVED                  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│  🎉 Heroku bill: $0                                                        │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
+**Human Gates**:
 
-## The Murder Plan
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           PHASE 0: NOW                                       │
-│                     Rails handles everything                                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ Stripe Webhooks
-                                    ▼
-                    ┌───────────────────────────────┐
-                    │   Rails /stripe_events        │
-                    │   PostgreSQL                  │
-                    │   Sidekiq background jobs     │
-                    └───────────────────────────────┘
-                                    │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-            Customer.io                     Mixpanel
-
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           PHASE 1: DATA MIGRATION                            │
-│                     Copy data to Coursebuilder                               │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-    Rails PostgreSQL                         Coursebuilder PlanetScale
-    ┌─────────────────┐                      ┌─────────────────────────┐
-    │ accounts        │ ─────────────────▶   │ Organization            │
-    │ account_users   │ ─────────────────▶   │ OrganizationMembership  │
-    │ account_subs    │ ─────────────────▶   │ Subscription            │
-    │                 │ ─────────────────▶   │ MerchantSubscription    │
-    │                 │ ─────────────────▶   │ MerchantCustomer        │
-    │ users           │ ─────────────────▶   │ User                    │
-    │ (roles: [:pro]) │ ─────────────────▶   │ Entitlement             │
-    └─────────────────┘                      └─────────────────────────┘
-
-    Key transformations:
-    • stripe_customer_id → MerchantCustomer.identifier
-    • stripe_subscription_id → MerchantSubscription.identifier
-    • :pro role → Entitlement record with sourceType='SUBSCRIPTION'
-
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           PHASE 2: DUAL WRITE                                │
-│                     Both systems receive webhooks                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-                              Stripe Webhooks
-                                    │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-    ┌───────────────────────────┐   ┌───────────────────────────┐
-    │   Rails /stripe_events    │   │   Next.js /api/stripe     │
-    │   (PRIMARY)               │   │   (SHADOW)                │
-    │   • Handles business logic│   │   • Logs everything       │
-    │   • Updates PostgreSQL    │   │   • Updates PlanetScale   │
-    └───────────────────────────┘   │   • Compare results       │
-                                    └───────────────────────────┘
-
-    Validation:
-    • Every webhook processed by both
-    • Compare outcomes
-    • Alert on divergence
-    • Build confidence
-
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           PHASE 3: FLIP                                      │
-│                     Next.js becomes primary                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-                              Stripe Webhooks
-                                    │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-    ┌───────────────────────────┐   ┌───────────────────────────┐
-    │   Rails /stripe_events    │   │   Next.js /api/stripe     │
-    │   (SHADOW)                │   │   (PRIMARY)               │
-    │   • Read-only logging     │   │   • Handles business logic│
-    │   • Comparison only       │   │   • Updates PlanetScale   │
-    └───────────────────────────┘   │   • Inngest background    │
-                                    └───────────────────────────┘
-
-    Auth cutover:
-    • Users log in via Coursebuilder
-    • Session tokens from PlanetScale
-    • Rails becomes read-only
-
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           PHASE 4: KILL                                      │
-│                     Rails is dead                                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-                              Stripe Webhooks
-                                    │
-                                    ▼
-                    ┌───────────────────────────────┐
-                    │   Next.js /api/stripe         │
-                    │   PlanetScale                 │
-                    │   Inngest background jobs     │
-                    └───────────────────────────────┘
-                                    │
-                                    │
-                                    ▼
-                              Customer.io
-
-    🎉 Rails PostgreSQL archived
-    🎉 Sidekiq shut down
-    🎉 Heroku dyno count: 0
-```
+- `axl.4` - Shadow mode review (7+ days stable)
+- `dwa` - Auth cutover plan approval
+- `axl.8` - DNS cutover authorization
+- `axl.10` - Kill Rails authorization
 
 ---
 
 ## Key Numbers
 
-### Subscription Data (Rails PostgreSQL)
+### Users & Subscriptions
 
-| Metric               | Value     | Notes                            |
-| -------------------- | --------- | -------------------------------- |
-| Active subscriptions | 3,335     | All in modern model              |
-| Legacy subscriptions | 0         | Dead since Dec 2022              |
-| Total users          | 699,318   | Need to migrate                  |
-| Total accounts       | 94,679    | → Organizations                  |
-| Monthly new subs     | ~93       | All go to modern model           |
-| Progress records     | 2,957,917 | series_progresses - MUST MIGRATE |
+| Metric               | Value     | Notes                  |
+| -------------------- | --------- | ---------------------- |
+| Total users          | 699,318   | All need migration     |
+| Total accounts       | 94,679    | → Organizations        |
+| Active subscriptions | 3,335     | All in modern model    |
+| Monthly new subs     | ~93       | All go to modern model |
+| Progress records     | 2,957,917 | Largest migration      |
+| Teams                | 266       | With 1,200+ members    |
 
-### Content Data (download-egghead SQLite)
+### Content
 
-| Content     | Count | Status                    |
-| ----------- | ----- | ------------------------- |
-| Courses     | 420   | 330 pro, 90 free          |
-| Lessons     | 5,132 | 5,051 published           |
-| Videos      | 7,634 | **97.5% migrated to Mux** |
-| Instructors | 134   |                           |
-| Tags        | 627   |                           |
+| Content     | Count | Status           |
+| ----------- | ----- | ---------------- |
+| Courses     | 420   | 330 pro, 90 free |
+| Lessons     | 5,132 | 5,051 published  |
+| Videos      | 7,634 | **97.5% on Mux** |
+| Instructors | 134   |                  |
+| Tags        | 627   |                  |
 
 ### Video Migration Status
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MUX VIDEO MIGRATION: 97.5%                           │
+│                         MUX VIDEO MIGRATION: 97.5%                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   ████████████████████████████████████████████████████░░  7,441 / 7,634     │
-│                                                                              │
-│   ✅ updated (with mux_asset_id): 6,764                                      │
-│   ⚠️  no_srt (missing subtitles): 677                                        │
-│   ❌ missing_video (source gone): 193                                        │
-│                                                                              │
+│                                                                             │
+│   ████████████████████████████████████████████████████░░  7,441 / 7,634    │
+│                                                                             │
+│   ✅ updated (with mux_asset_id): 6,764                                     │
+│   ⚠️  no_srt (missing subtitles): 677                                       │
+│   ❌ missing_video (source gone): 193                                       │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-### What We're NOT Migrating
-
-- `session_activations` - Users can re-login, password reset OK
-- Legacy `subscriptions` table - Dead code since Dec 2022
-- `stripe_events` history - Start fresh
-- Multi-tenant support - 95%+ is egghead.io
 
 ---
 
@@ -246,7 +307,7 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         RAILS → COURSEBUILDER                                │
+│                         RAILS → COURSEBUILDER                               │
 └─────────────────────────────────────────────────────────────────────────────┘
 
     RAILS                                    COURSEBUILDER
@@ -255,10 +316,10 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
     ┌─────────────────┐                      ┌─────────────────────────┐
     │    accounts     │                      │     Organization        │
     ├─────────────────┤                      ├─────────────────────────┤
-    │ id              │ ──────────────────▶  │ id (new UUID)           │
+    │ id              │ ──────────────────▶  │ id (new CUID)           │
     │ name            │ ──────────────────▶  │ name                    │
     │ slug            │ ──────────────────▶  │ fields.slug             │
-    │ stripe_customer │ ──┐                  │                         │
+    │ stripe_customer │ ──┐                  │ fields.legacyId         │
     └─────────────────┘   │                  └─────────────────────────┘
                           │
                           │                  ┌─────────────────────────┐
@@ -279,8 +340,6 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
     ├─────────────────┤                      ├─────────────────────────┤
     │ account_id      │ ──────────────────▶  │ organizationId          │
     │ status          │ ──────────────────▶  │ status                  │
-    │ quantity        │ ──────────────────▶  │ fields.quantity         │
-    │ interval        │ ──────────────────▶  │ fields.interval         │
     │ stripe_sub_id   │ ──┐                  │ merchantSubscriptionId  │
     └─────────────────┘   │                  └─────────────────────────┘
                           │
@@ -290,54 +349,43 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
                                              └─────────────────────────┘
 
     ┌─────────────────┐                      ┌─────────────────────────┐
-    │     users       │                      │     Entitlement         │
+    │     users       │                      │       User              │
     ├─────────────────┤                      ├─────────────────────────┤
-    │ roles: [:pro]   │ ──────────────────▶  │ entitlementType = 'pro' │
-    │                 │                      │ sourceType = 'SUB'      │
-    │                 │                      │ sourceId = sub.id       │
+    │ id              │ ──────────────────▶  │ fields.legacyId         │
+    │ email           │ ──────────────────▶  │ email                   │
+    │ first + last    │ ──────────────────▶  │ name                    │
+    │ roles: [:pro]   │ ──────────────────▶  │ → Entitlement           │
     └─────────────────┘                      └─────────────────────────┘
 ```
 
 ---
 
-## Webhook Events
+## Critical Gaps & Safety
 
-| Event                           | Rails Delay | Action                             |
-| ------------------------------- | ----------- | ---------------------------------- |
-| `checkout.session.completed`    | None        | Create user + org + subscription   |
-| `customer.subscription.created` | None        | Create org, send magic link        |
-| `customer.subscription.updated` | **5 sec**   | Update subscription, sync access   |
-| `customer.subscription.deleted` | None        | Cancel subscription, revoke access |
-| `invoice.payment_succeeded`     | **1 min**   | Record transaction, extend period  |
-| `invoice.payment_failed`        | None        | Log only (Stripe handles dunning)  |
+### Data Integrity (Bead: `341`)
 
-### Why the delays?
+| Gap                        | Risk                 | Mitigation                          |
+| -------------------------- | -------------------- | ----------------------------------- |
+| Dual-write race conditions | Double-charges       | Webhook deduplication (`cqi`)       |
+| Missing idempotency        | Duplicate processing | Store `stripe_event_id` (`341.1-2`) |
+| Post-cutover drift         | Data inconsistency   | Daily reconciliation job (`341.4`)  |
+| No rollback test           | Can't recover        | Test flip back to Rails (`341.7`)   |
 
-**5-second delay on `subscription.updated`**: Race condition. `checkout.session.completed` and `subscription.updated` fire nearly simultaneously. The checkout handler creates the Organization, but if `subscription.updated` runs first, there's no Organization to update.
+### SEO Safety (Bead: `34t`)
 
-**1-minute delay on `invoice.payment_succeeded`**: Wait for Stripe to finalize the charge before recording the transaction.
+| Gap               | Risk         | Mitigation                               |
+| ----------------- | ------------ | ---------------------------------------- |
+| Broken URLs       | Traffic loss | Pre-migration sitemap snapshot (`34t.1`) |
+| Missing redirects | 404 errors   | Comprehensive redirect map (`34t.8`)     |
+| Sitemap changes   | Ranking drop | Sitemap diff tool (`34t.2`)              |
 
----
+### Auth Safety (Bead: `04y`)
 
-## Coursebuilder Webhook Status
-
-| Event                           | Status         | Notes                   |
-| ------------------------------- | -------------- | ----------------------- |
-| `checkout.session.completed`    | ✅ Working     | Sends to Inngest        |
-| `charge.refunded`               | ✅ Working     | Updates purchase status |
-| `customer.subscription.created` | ⚠️ **STUB**    | Has TODO, no DB updates |
-| `customer.subscription.updated` | ⚠️ **STUB**    | Has TODO, no DB updates |
-| `customer.subscription.deleted` | ❌ **MISSING** | Not even a stub file    |
-
-**CRITICAL**: All 3 subscription handlers need full implementation before cutover.
-
----
-
-## External Integrations
-
-| Service     | On Subscribe                   | On Cancel                    |
-| ----------- | ------------------------------ | ---------------------------- |
-| Customer.io | Track `subscribed`, sync attrs | Track `subscription removed` |
+| Gap                     | Risk             | Mitigation                    |
+| ----------------------- | ---------------- | ----------------------------- |
+| OAuth re-linking        | Users locked out | Re-link flow (`04y.1`)        |
+| OAuth-only users (~45K) | Can't sign in    | Password set flow (`04y.3-4`) |
+| Support overload        | Slow resolution  | Support playbook (`04y.5`)    |
 
 ---
 
@@ -348,52 +396,54 @@ migrate-egghead/
 ├── AGENTS.md                    # AI agent instructions - READ FIRST
 ├── README.md                    # This file
 ├── .beads/                      # Issue tracking (git-backed)
-├── course-builder/              # Coursebuilder submodule (TARGET)
+│
+├── course-builder/              # TARGET - Coursebuilder submodule
+│   └── apps/egghead/            # egghead app in Coursebuilder
+│
+├── egghead-rails/               # KILL - Rails backend submodule
+│   ├── app/controllers/stripe_events_controller.rb
+│   ├── app/models/account_subscription.rb
+│   └── app/workers/stripe/      # Sidekiq jobs to port
+│
+├── egghead-next/                # KILL - Next.js frontend submodule
+│   └── src/                     # UI components to reference
+│
 ├── download-egghead/            # Media migration toolkit
-│   ├── egghead_videos.db        # SQLite: courses, lessons, videos, instructors
-│   ├── send-to-mux.mjs          # Mux video migration script
-│   ├── load-egghead-courses.mjs # Course data fetcher
-│   └── egghead-sql/             # SQL exports for direct import
-├── egghead-next/                # Next.js frontend (submodule) - KILL
-├── egghead-rails/               # Rails backend (submodule) - KILL
+│   ├── egghead_videos.db        # SQLite: courses, lessons, videos
+│   └── send-to-mux.mjs          # Mux migration script
+│
 ├── investigation/               # Effect-TS analysis toolkit
-│   └── src/
-│       ├── lib/
-│       │   ├── db.ts            # PostgreSQL connection (Rails)
-│       │   ├── mysql.ts         # PlanetScale connection (Coursebuilder)
-│       │   └── sqlite.ts        # SQLite connection (download-egghead)
-│       └── queries/
-│           ├── subscriptions.ts # Subscription analysis
-│           ├── table-activity.ts # Rails DB write activity
-│           └── sqlite-explore.ts # Media DB exploration
-└── reports/
-    ├── STRIPE_WEBHOOK_MIGRATION.md      # Webhook migration guide
-    ├── COURSEBUILDER_SCHEMA_ANALYSIS.md # Target schema analysis
-    ├── MIGRATION_DATA_REPORT.md         # Full data analysis
-    └── UI_MIGRATION_ANALYSIS.md         # Detailed UI gap analysis
+│   └── src/queries/             # Database exploration scripts
+│
+└── reports/                     # Analysis documents
+    ├── COURSEBUILDER_SCHEMA_ANALYSIS.md
+    ├── STRIPE_WEBHOOK_MIGRATION.md
+    ├── UI_MIGRATION_ANALYSIS.md
+    ├── CUTOVER-RUNBOOK.md
+    ├── DUAL-WRITE-RUNBOOK.md
+    └── ROLLBACK-RUNBOOK.md
 ```
 
 ---
 
-## Beads (Issue Tracking)
+## Running the Toolkit
 
-Epic: `migrate-egghead-39p` - Kill egghead-rails and egghead-next
-
-| ID  | Task                                             | Priority | Status   |
-| --- | ------------------------------------------------ | -------- | -------- |
-| .1  | Schema design: Map Rails models to Coursebuilder | P0       | ✅ done  |
-| .2  | User/Account migration pipeline (699K users)     | P0       | **next** |
-| .3  | Subscription data migration (3,335 active)       | P0       | open     |
-| .4  | Progress data migration (3M records)             | P0       | open     |
-| .5  | Content migration: Courses, lessons, videos      | P0       | open     |
-| .6  | Stripe webhook handlers (Inngest)                | P1       | open     |
-| .7  | Video player + lesson view + search              | P1       | open     |
-| .8  | User profiles + instructor pages                 | P2       | open     |
-| .9  | Auth cutover: NextAuth + OAuth migration         | P1       | open     |
-| .10 | DNS + traffic cutover runbook                    | P1       | open     |
+### Investigation Queries
 
 ```bash
-# Check current status
+cd investigation
+pnpm install
+cp .env.example .env
+# Add DATABASE_URL (Rails) and NEW_DATABASE_URL (PlanetScale)
+
+pnpm tsx src/queries/subscriptions.ts
+pnpm tsx src/queries/table-activity.ts
+```
+
+### Beads (Issue Tracking)
+
+```bash
+# See what's ready to work on
 beads_ready()
 
 # Start a task
@@ -406,321 +456,30 @@ beads_close(id="migrate-egghead-39p.2", reason="Completed user migration")
 beads_sync()
 ```
 
----
-
-## Zero-Downtime Strategy
-
-Based on patterns from **Designing Data-Intensive Applications** and **Building Event-Driven Microservices**:
-
-### Phase 1: Shadow Mode (Data Migration)
-
-```
-Rails (PRIMARY) ──────────────────────────────────────────────────────────────►
-
-Coursebuilder   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
-                │
-                └─ Bulk import users, accounts, subscriptions, progress
-                   (one-time, can run multiple times to catch up)
-```
-
-### Phase 2: Dual Write (Webhooks)
-
-```
-Stripe ─────┬─────► Rails (PRIMARY) ─────► PostgreSQL
-            │                                  │
-            │                                  │ Compare
-            │                                  ▼
-            └─────► Coursebuilder (SHADOW) ─► PlanetScale
-                    Logs divergence, builds confidence
-```
-
-### Phase 3: Flip Primary
-
-```
-Stripe ─────┬─────► Rails (SHADOW) ──────► PostgreSQL (read-only)
-            │                                  │
-            │                                  │ Verify
-            │                                  ▼
-            └─────► Coursebuilder (PRIMARY) ► PlanetScale
-                    Quick rollback if issues
-```
-
-### Phase 4: Kill
-
-```
-Stripe ──────────► Coursebuilder ──────────► PlanetScale
-
-Rails ─────────────────────────────────────► ARCHIVED
-egghead-next ──────────────────────────────► ARCHIVED
-```
-
-### Key Principles
-
-- **No big bang** - Gradual cutover with rollback at each step
-- **Stripe webhooks as source of truth** - Event-driven sync
-- **Users can re-login** - No session migration needed
-- **Password reset flow** - Clean auth cutover
-
----
-
-## Running the Investigation Toolkit
+### Current Status
 
 ```bash
-cd investigation
-
-# Install dependencies
-pnpm install
-
-# Set up environment
-cp .env.example .env
-# Add DATABASE_URL (Rails Postgres) and NEW_DATABASE_URL (PlanetScale)
-
-# Run queries
-pnpm tsx src/queries/subscriptions.ts
-pnpm tsx src/queries/tenants.ts
-pnpm tsx src/queries/migration-status.ts
+# Next ready task:
+migrate-egghead-39p.2 - User/Account migration pipeline (699K users)
 ```
 
 ---
 
-## Key Files in Rails
+## Human Approval Gates
 
-| File                                          | Purpose                   |
-| --------------------------------------------- | ------------------------- |
-| `app/controllers/stripe_events_controller.rb` | Webhook entry point       |
-| `app/models/stripe_webhook_event.rb`          | Event persistence         |
-| `app/models/account_subscription.rb`          | Modern subscription model |
-| `app/models/account.rb`                       | Customer container        |
-| `app/workers/stripe/`                         | Sidekiq background jobs   |
+These beads require explicit human approval before proceeding:
 
-## Key Files in Coursebuilder
-
-| File                                                           | Purpose             |
-| -------------------------------------------------------------- | ------------------- |
-| `packages/core/src/lib/pricing/process-stripe-webhook.ts`      | Webhook router      |
-| `packages/core/src/inngest/stripe/`                            | Inngest handlers    |
-| `packages/adapter-drizzle/src/lib/mysql/schemas/commerce/`     | Commerce schemas    |
-| `packages/adapter-drizzle/src/lib/mysql/schemas/entitlements/` | Entitlement schemas |
-
----
-
-## UI Migration: What Coursebuilder Already Has
-
-The egghead app in Coursebuilder (`course-builder/apps/egghead`) already has **significant infrastructure**:
-
-| Feature             | Status  | Notes                                     |
-| ------------------- | ------- | ----------------------------------------- |
-| Auth system         | ✅ Done | NextAuth v5 + CASL RBAC                   |
-| Content model       | ✅ Done | ContentResource (posts, lessons, courses) |
-| Video pipeline      | ✅ Done | Mux encoding, Deepgram transcription      |
-| Background jobs     | ✅ Done | Inngest                                   |
-| Search provider     | ✅ Done | Typesense (same as egghead-next!)         |
-| Egghead API sync    | ✅ Done | Bi-directional                            |
-| 27+ shared packages | ✅ Done |                                           |
-
-### What Needs Building
-
-| Feature                 | Priority | Effort | Notes                                      |
-| ----------------------- | -------- | ------ | ------------------------------------------ |
-| Video player            | P0       | Medium | Use CB's Mux player, not xstate complexity |
-| Progress tracking       | P0       | High   | 3M records to migrate                      |
-| Pro/free gating         | P0       | Low    | Wire up Entitlements                       |
-| Search UI               | P1       | Medium | Port InstantSearch components              |
-| Subscription management | P1       | Medium | Stripe portal integration                  |
-| Pricing page            | P1       | Medium | Port with shadcn                           |
-| User profile            | P2       | Low    | Basic settings                             |
-| Team management         | P3       | High   | Defer to post-launch                       |
-
----
-
-## URL Redirect Strategy (SEO Critical)
-
-```typescript
-// next.config.ts
-export default {
-  async redirects() {
-    return [
-      // Instructors: ONE dynamic route, not 20+ hardcoded
-      {
-        source: "/i/:slug",
-        destination: "/instructors/:slug",
-        permanent: true,
-      },
-      {
-        source: "/i/:slug/rss.xml",
-        destination: "/instructors/:slug/rss",
-        permanent: true,
-      },
-
-      // Legacy content URLs
-      {
-        source: "/playlists/:slug",
-        destination: "/courses/:slug",
-        permanent: true,
-      },
-      { source: "/s/:slug", destination: "/courses/:slug", permanent: true },
-      { source: "/browse/:topic", destination: "/q/:topic", permanent: true },
-
-      // User routes
-      { source: "/user", destination: "/profile", permanent: true },
-      {
-        source: "/user/:path*",
-        destination: "/profile/:path*",
-        permanent: true,
-      },
-    ];
-  },
-};
-```
-
-### Search URLs (MUST PRESERVE)
-
-These drive organic traffic - massive sitemap from topic combinations:
-
-```
-/q/react                              → Topic search
-/q/react-typescript                   → Combined topics
-/q/react-resources-by-kent-c-dodds    → Filtered by instructor
-```
-
-**Implementation**: One dynamic route `/q/[[...all]]/page.tsx` that parses URL segments into Typesense filters.
-
----
-
-## Technical Decisions
-
-| Decision          | Choice                     | Rationale                              |
-| ----------------- | -------------------------- | -------------------------------------- |
-| Video player      | Coursebuilder's Mux player | Simpler than porting xstate complexity |
-| Progress tracking | Build new in CB            | Clean break, migrate 3M records        |
-| Search            | Same Typesense, new UI     | Port InstantSearch components          |
-| Instructor pages  | One dynamic route          | Not 20+ hardcoded components           |
-| Team features     | Defer post-launch          | Complex, few users                     |
-| State management  | React state                | Not xstate machines                    |
-
----
-
-## CRITICAL GAPS DISCOVERED (Gap Analysis Dec 2025)
-
-### Data Migration Safety (from Designing Data-Intensive Applications)
-
-| Gap                           | Risk                              | Mitigation                                     |
-| ----------------------------- | --------------------------------- | ---------------------------------------------- |
-| **No CDC tool specified**     | Dual writes cause race conditions | Use Debezium, AWS DMS, or trigger-based CDC    |
-| **Missing idempotency layer** | Double-charges during cutover     | Store `stripe_event_id` in all mutation tables |
-| **No reconciliation job**     | Post-cutover drift undetected     | Daily checksum comparison PG ↔ PlanetScale     |
-| **No rollback test**          | Can't recover if Inngest fails    | Test flip back to Rails/Sidekiq before cutover |
-
-### Undocumented Rails Systems (17 cron jobs!)
-
-| System                                 | Impact                          | Action                                   |
-| -------------------------------------- | ------------------------------- | ---------------------------------------- |
-| **17 Sidekiq-Cron jobs**               | SITE BREAKS                     | Port ALL to Inngest cron                 |
-| `StripeReconciler` (daily)             | Missed transactions             | Port - catches webhook failures          |
-| `GiftExpirationWorker` (daily)         | Gifts never expire              | Port - gift system depends on this       |
-| `RefreshSitemap` (4h)                  | SEO degrades                    | Port - critical for search ranking       |
-| `LessonPublishWorker` (10min)          | Scheduled lessons don't publish | Port                                     |
-| **Mixpanel analytics**                 | Lost tracking data              | Add Mixpanel SDK or deprecate            |
-| **HelloSign contracts**                | Can't onboard instructors       | Port or use manual process               |
-| **SAML/SSO** (~15 enterprise accounts) | Enterprise users can't login    | Defer or port ruby-saml                  |
-| **Gift subscription system**           | Holiday sales break             | Migrate `gifts` table + expiration logic |
-| **Referral/affiliate system**          | Affiliate payouts break         | Migrate or disable program               |
-| **17 transactional mailers**           | Users don't get emails          | Port ALL to Resend/Postmark              |
-| **CloudFront signed RSS URLs**         | Pro RSS feeds break             | Port signing logic                       |
-| **10+ Slack notification workers**     | Internal alerts stop            | Port or disable (not user-facing)        |
-
-### Undocumented Next.js Systems
-
-| System                              | Impact                              | Action                              |
-| ----------------------------------- | ----------------------------------- | ----------------------------------- |
-| **SCORM Cloud / xAPI**              | Enterprise progress tracking breaks | Investigate usage, port if active   |
-| **Customer.io deep integration**    | ALL email automation breaks         | Port 3 API endpoints + Inngest jobs |
-| **Discord OAuth + role management** | Community access breaks             | Port OAuth flow + role sync         |
-| **S3 instructor upload tools**      | Instructors can't upload content    | Check if CB has equivalent          |
-| **Tip content type**                | `/tipz` page breaks                 | Verify ContentResource mapping      |
-| **Lifetime membership pricing**     | `/forever` page breaks              | Port pricing calculation logic      |
-| **Account ownership transfer**      | Admin workflows break               | Add to plan                         |
-
-### Coursebuilder Readiness
-
-| Component             | Status         | Gap                                     |
-| --------------------- | -------------- | --------------------------------------- |
-| Subscription handlers | **STUBS ONLY** | All 3 have TODO comments, no DB updates |
-| Progress tracking     | ✅ Ready       | Schema exists, needs migration script   |
-| Entitlements          | ✅ Ready       | Fully implemented                       |
-| Organizations         | ✅ Ready       | Schema exists                           |
-| **Customer.io**       | **MISSING**    | Not in Coursebuilder at all             |
-
----
-
-## Migration Checklist (Updated with Gaps)
-
-### Phase 0: Pre-Migration Safety
-
-- [ ] **Choose CDC mechanism** - Debezium, AWS DMS, or trigger-based
-- [ ] **Add idempotency layer** - Store `stripe_event_id` in mutation tables
-- [ ] **Build reconciliation job** - Daily PG ↔ PlanetScale checksum
-- [ ] **Test rollback path** - Verify can flip back to Rails/Sidekiq
-
-### Phase 1: Data Migration
-
-- [ ] Users (699K) → User table
-- [ ] Accounts (94K) → Organization table
-- [ ] Account memberships → OrganizationMembership
-- [ ] Subscriptions (3,335 active) → Subscription + MerchantSubscription
-- [ ] Stripe customers → MerchantCustomer
-- [ ] Pro access → Entitlements
-- [ ] Progress (3M records) → ResourceProgress
-- [ ] Content (courses, lessons) → ContentResource
-- [ ] **Gifts table** → Port gift subscription system
-- [ ] **Referrals table** → Port or disable affiliate program
-
-### Phase 2: Webhook Handlers (Inngest) - CURRENTLY STUBS!
-
-- [ ] `checkout.session.completed` - Create user + org + subscription
-- [ ] `customer.subscription.created` - Create org, send magic link
-- [ ] `customer.subscription.updated` - Update subscription (5-sec delay)
-- [ ] `customer.subscription.deleted` - Cancel, revoke access
-- [ ] `invoice.payment_succeeded` - Record transaction (1-min delay)
-
-### Phase 3: Cron Jobs (17 to port!)
-
-- [ ] `StripeReconciler` - Daily Stripe sync
-- [ ] `GiftExpirationWorker` - Daily gift expiration
-- [ ] `AccountSubscriptionRenewalWorker` - Renewal reminders
-- [ ] `SignInTokenCleaner` - Magic link cleanup (every minute)
-- [ ] `RefreshSitemap` - SEO sitemap (every 4 hours)
-- [ ] `LessonPublishWorker` - Scheduled publishing (every 10 min)
-- [ ] `DailyReportWorker`, `WeeklyReportWorker`, `MonthlyReportWorker`
-- [ ] `PlaylistRanker`, `TagRanker` - Search ranking
-- [ ] `SyncPodcastsWorker` - Podcast RSS sync
-
-### Phase 4: External Integrations
-
-- [ ] **Customer.io** - Build from scratch (3 endpoints + Inngest jobs)
-- [ ] **17 transactional mailers** - Port to Resend/Postmark
-
-### Phase 5: UI Components
-
-- [ ] Video player (Mux)
-- [ ] Progress tracking
-- [ ] Search UI (InstantSearch)
-- [ ] Pricing page
-- [ ] **Lifetime pricing page** (`/forever`)
-- [ ] Subscription management
-- [ ] User profile
-- [ ] **Gift redemption** (`/gifts/claim/[guid]`)
-- [ ] **Instructor upload tools** (if not in CB)
-
-### Phase 6: Cutover
-
-- [ ] Dual-write webhooks (shadow mode)
-- [ ] **Shadow traffic validation** - Replay webhooks, compare outputs
-- [ ] Flip primary to Coursebuilder
-- [ ] Auth cutover (password reset flow)
-- [ ] DNS switch
-- [ ] **Run reconciliation job** - Verify data consistency
-- [ ] Kill Rails
+| Gate     | Phase | What Needs Review            |
+| -------- | ----- | ---------------------------- |
+| `6pv.17` | 0     | Migration control plane      |
+| `koh.17` | 1     | Data migration plan          |
+| `15v`    | 2     | Webhook handler design       |
+| `esr`    | 4     | Customer.io + email strategy |
+| `sr4`    | 5     | UI architecture              |
+| `axl.4`  | 6     | Shadow mode results          |
+| `dwa`    | 6     | Auth cutover plan            |
+| `axl.8`  | 6     | DNS cutover                  |
+| `axl.10` | 6     | Kill Rails authorization     |
 
 ---
 
@@ -728,14 +487,15 @@ These drive organic traffic - massive sitemap from topic combinations:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│                         🎉 RAILS IS DEAD 🎉                                  │
-│                                                                              │
+│                                                                             │
+│                         🎉 RAILS IS DEAD 🎉                                 │
+│                                                                             │
 │   • All subscriptions managed by Coursebuilder                              │
 │   • All webhooks handled by Next.js + Inngest                               │
 │   • All users authenticated via Coursebuilder                               │
+│   • All content served from PlanetScale                                     │
 │   • PostgreSQL archived (read-only backup)                                  │
 │   • Heroku bill: $0                                                         │
-│                                                                              │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
