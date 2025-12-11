@@ -1,8 +1,10 @@
 # Kill the Rails App (and egghead-next too)
 
 > **Mission**: Consolidate egghead.io onto Coursebuilder - kill both Rails AND Next.js  
-> **Status**: Schema design in progress  
+> **Status**: Schema design complete, starting user migration  
 > **Updated**: December 11, 2025
+
+**For AI agents**: Read [AGENTS.md](./AGENTS.md) first - contains critical rules and context.
 
 ---
 
@@ -346,6 +348,7 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
 
 ```
 migrate-egghead/
+├── AGENTS.md                    # AI agent instructions - READ FIRST
 ├── README.md                    # This file
 ├── .beads/                      # Issue tracking (git-backed)
 ├── course-builder/              # Coursebuilder submodule (TARGET)
@@ -379,28 +382,31 @@ migrate-egghead/
 
 Epic: `migrate-egghead-39p` - Kill egghead-rails and egghead-next
 
-| ID  | Task                                             | Priority | Status |
-| --- | ------------------------------------------------ | -------- | ------ |
-| .1  | Schema design: Map Rails models to Coursebuilder | P0       | open   |
-| .2  | User/Account migration pipeline (699K users)     | P0       | open   |
-| .3  | Subscription data migration (3,335 active)       | P0       | open   |
-| .4  | Progress data migration (3M records)             | P0       | open   |
-| .5  | Content migration: Courses, lessons, videos      | P0       | open   |
-| .6  | Stripe webhook handlers (Inngest)                | P1       | open   |
-| .7  | Video player + lesson view + search              | P1       | open   |
-| .8  | User profiles + instructor pages                 | P2       | open   |
-| .9  | Auth cutover: NextAuth + OAuth migration         | P1       | open   |
-| .10 | DNS + traffic cutover runbook                    | P1       | open   |
+| ID  | Task                                             | Priority | Status   |
+| --- | ------------------------------------------------ | -------- | -------- |
+| .1  | Schema design: Map Rails models to Coursebuilder | P0       | ✅ done  |
+| .2  | User/Account migration pipeline (699K users)     | P0       | **next** |
+| .3  | Subscription data migration (3,335 active)       | P0       | open     |
+| .4  | Progress data migration (3M records)             | P0       | open     |
+| .5  | Content migration: Courses, lessons, videos      | P0       | open     |
+| .6  | Stripe webhook handlers (Inngest)                | P1       | open     |
+| .7  | Video player + lesson view + search              | P1       | open     |
+| .8  | User profiles + instructor pages                 | P2       | open     |
+| .9  | Auth cutover: NextAuth + OAuth migration         | P1       | open     |
+| .10 | DNS + traffic cutover runbook                    | P1       | open     |
 
 ```bash
 # Check current status
-bd ready
+beads_ready()
 
 # Start a task
-bd start migrate-egghead-39p.1
+beads_start(id="migrate-egghead-39p.2")
 
 # Close when done
-bd done migrate-egghead-39p.1 "Completed schema mapping"
+beads_close(id="migrate-egghead-39p.2", reason="Completed user migration")
+
+# Sync to git
+beads_sync()
 ```
 
 ---
@@ -594,6 +600,52 @@ These drive organic traffic - massive sitemap from topic combinations:
 | Instructor pages  | One dynamic route          | Not 20+ hardcoded components           |
 | Team features     | Defer post-launch          | Complex, few users                     |
 | State management  | React state                | Not xstate machines                    |
+
+---
+
+## Migration Checklist
+
+### Data Migration
+
+- [ ] Users (699K) → User table
+- [ ] Accounts (94K) → Organization table
+- [ ] Account memberships → OrganizationMembership
+- [ ] Subscriptions (3,335 active) → Subscription + MerchantSubscription
+- [ ] Stripe customers → MerchantCustomer
+- [ ] Pro access → Entitlements
+- [ ] Progress (3M records) → ResourceProgress
+- [ ] Content (courses, lessons) → ContentResource
+
+### Webhook Handlers (Inngest)
+
+- [ ] `checkout.session.completed` - Create user + org + subscription
+- [ ] `customer.subscription.created` - Create org, send magic link
+- [ ] `customer.subscription.updated` - Update subscription (5-sec delay)
+- [ ] `customer.subscription.deleted` - Cancel, revoke access
+- [ ] `invoice.payment_succeeded` - Record transaction (1-min delay)
+
+### External Integrations
+
+- [ ] ConvertKit - Tag `paid_member`, sync `is_pro`
+- [ ] Customer.io - Track events, sync attributes
+- [ ] Discourse - Force logout on cancel
+
+### UI Components
+
+- [ ] Video player (Mux)
+- [ ] Progress tracking
+- [ ] Search UI (InstantSearch)
+- [ ] Pricing page
+- [ ] Subscription management
+- [ ] User profile
+
+### Cutover
+
+- [ ] Dual-write webhooks (shadow mode)
+- [ ] Flip primary to Coursebuilder
+- [ ] Auth cutover (password reset flow)
+- [ ] DNS switch
+- [ ] Kill Rails
 
 ---
 
