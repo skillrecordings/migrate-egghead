@@ -1,10 +1,12 @@
 # Kill the Rails App (and egghead-next too)
 
 > **Mission**: Consolidate egghead.io onto Coursebuilder - kill both Rails AND Next.js  
-> **Status**: Schema design complete, starting user migration  
+> **Status**: Gap analysis complete - found 30+ undocumented systems  
 > **Updated**: December 11, 2025
 
 **For AI agents**: Read [AGENTS.md](./AGENTS.md) first - contains critical rules and context.
+
+**TL;DR**: The subscription data model is ready, but we discovered **17 cron jobs**, **17 mailers**, and **Customer.io/Discourse integrations** that weren't in the original plan. Coursebuilder's subscription handlers are **stubs only** - they need implementation.
 
 ---
 
@@ -321,15 +323,15 @@ This isn't just "kill Rails" anymore. We're consolidating **three systems** into
 
 ## Coursebuilder Webhook Status
 
-| Event                           | Status      | Notes                   |
-| ------------------------------- | ----------- | ----------------------- |
-| `checkout.session.completed`    | ✅ Working  | Sends to Inngest        |
-| `charge.refunded`               | ✅ Working  | Updates purchase status |
-| `customer.subscription.created` | ❌ **TODO** | Stub with console.log   |
-| `customer.subscription.updated` | ❌ **TODO** | Stub with console.log   |
-| `customer.subscription.deleted` | ❌ **TODO** | Stub with console.log   |
+| Event                           | Status         | Notes                   |
+| ------------------------------- | -------------- | ----------------------- |
+| `checkout.session.completed`    | ✅ Working     | Sends to Inngest        |
+| `charge.refunded`               | ✅ Working     | Updates purchase status |
+| `customer.subscription.created` | ⚠️ **STUB**    | Has TODO, no DB updates |
+| `customer.subscription.updated` | ⚠️ **STUB**    | Has TODO, no DB updates |
+| `customer.subscription.deleted` | ❌ **MISSING** | Not even a stub file    |
 
-**The subscription handlers are the main work.**
+**CRITICAL**: All 3 subscription handlers need full implementation before cutover.
 
 ---
 
@@ -603,9 +605,71 @@ These drive organic traffic - massive sitemap from topic combinations:
 
 ---
 
-## Migration Checklist
+## CRITICAL GAPS DISCOVERED (Gap Analysis Dec 2025)
 
-### Data Migration
+### Data Migration Safety (from Designing Data-Intensive Applications)
+
+| Gap                           | Risk                              | Mitigation                                     |
+| ----------------------------- | --------------------------------- | ---------------------------------------------- |
+| **No CDC tool specified**     | Dual writes cause race conditions | Use Debezium, AWS DMS, or trigger-based CDC    |
+| **Missing idempotency layer** | Double-charges during cutover     | Store `stripe_event_id` in all mutation tables |
+| **No reconciliation job**     | Post-cutover drift undetected     | Daily checksum comparison PG ↔ PlanetScale     |
+| **No rollback test**          | Can't recover if Inngest fails    | Test flip back to Rails/Sidekiq before cutover |
+
+### Undocumented Rails Systems (17 cron jobs!)
+
+| System                                 | Impact                          | Action                                   |
+| -------------------------------------- | ------------------------------- | ---------------------------------------- |
+| **17 Sidekiq-Cron jobs**               | SITE BREAKS                     | Port ALL to Inngest cron                 |
+| `StripeReconciler` (daily)             | Missed transactions             | Port - catches webhook failures          |
+| `GiftExpirationWorker` (daily)         | Gifts never expire              | Port - gift system depends on this       |
+| `RefreshSitemap` (4h)                  | SEO degrades                    | Port - critical for search ranking       |
+| `LessonPublishWorker` (10min)          | Scheduled lessons don't publish | Port                                     |
+| **Mixpanel analytics**                 | Lost tracking data              | Add Mixpanel SDK or deprecate            |
+| **HelloSign contracts**                | Can't onboard instructors       | Port or use manual process               |
+| **SAML/SSO** (~15 enterprise accounts) | Enterprise users can't login    | Defer or port ruby-saml                  |
+| **Gift subscription system**           | Holiday sales break             | Migrate `gifts` table + expiration logic |
+| **Referral/affiliate system**          | Affiliate payouts break         | Migrate or disable program               |
+| **17 transactional mailers**           | Users don't get emails          | Port ALL to Resend/Postmark              |
+| **CloudFront signed RSS URLs**         | Pro RSS feeds break             | Port signing logic                       |
+| **10+ Slack notification workers**     | Internal alerts stop            | Port or disable (not user-facing)        |
+
+### Undocumented Next.js Systems
+
+| System                              | Impact                              | Action                              |
+| ----------------------------------- | ----------------------------------- | ----------------------------------- |
+| **SCORM Cloud / xAPI**              | Enterprise progress tracking breaks | Investigate usage, port if active   |
+| **Customer.io deep integration**    | ALL email automation breaks         | Port 3 API endpoints + Inngest jobs |
+| **Discord OAuth + role management** | Community access breaks             | Port OAuth flow + role sync         |
+| **S3 instructor upload tools**      | Instructors can't upload content    | Check if CB has equivalent          |
+| **Tip content type**                | `/tipz` page breaks                 | Verify ContentResource mapping      |
+| **Lifetime membership pricing**     | `/forever` page breaks              | Port pricing calculation logic      |
+| **Account ownership transfer**      | Admin workflows break               | Add to plan                         |
+
+### Coursebuilder Readiness
+
+| Component             | Status         | Gap                                     |
+| --------------------- | -------------- | --------------------------------------- |
+| Subscription handlers | **STUBS ONLY** | All 3 have TODO comments, no DB updates |
+| Progress tracking     | ✅ Ready       | Schema exists, needs migration script   |
+| Entitlements          | ✅ Ready       | Fully implemented                       |
+| Organizations         | ✅ Ready       | Schema exists                           |
+| ConvertKit            | ✅ Ready       | Just needs API keys                     |
+| **Customer.io**       | **MISSING**    | Not in Coursebuilder at all             |
+| **Discourse SSO**     | **MISSING**    | Not in Coursebuilder at all             |
+
+---
+
+## Migration Checklist (Updated with Gaps)
+
+### Phase 0: Pre-Migration Safety
+
+- [ ] **Choose CDC mechanism** - Debezium, AWS DMS, or trigger-based
+- [ ] **Add idempotency layer** - Store `stripe_event_id` in mutation tables
+- [ ] **Build reconciliation job** - Daily PG ↔ PlanetScale checksum
+- [ ] **Test rollback path** - Verify can flip back to Rails/Sidekiq
+
+### Phase 1: Data Migration
 
 - [ ] Users (699K) → User table
 - [ ] Accounts (94K) → Organization table
@@ -615,8 +679,10 @@ These drive organic traffic - massive sitemap from topic combinations:
 - [ ] Pro access → Entitlements
 - [ ] Progress (3M records) → ResourceProgress
 - [ ] Content (courses, lessons) → ContentResource
+- [ ] **Gifts table** → Port gift subscription system
+- [ ] **Referrals table** → Port or disable affiliate program
 
-### Webhook Handlers (Inngest)
+### Phase 2: Webhook Handlers (Inngest) - CURRENTLY STUBS!
 
 - [ ] `checkout.session.completed` - Create user + org + subscription
 - [ ] `customer.subscription.created` - Create org, send magic link
@@ -624,27 +690,46 @@ These drive organic traffic - massive sitemap from topic combinations:
 - [ ] `customer.subscription.deleted` - Cancel, revoke access
 - [ ] `invoice.payment_succeeded` - Record transaction (1-min delay)
 
-### External Integrations
+### Phase 3: Cron Jobs (17 to port!)
 
-- [ ] ConvertKit - Tag `paid_member`, sync `is_pro`
-- [ ] Customer.io - Track events, sync attributes
-- [ ] Discourse - Force logout on cancel
+- [ ] `StripeReconciler` - Daily Stripe sync
+- [ ] `GiftExpirationWorker` - Daily gift expiration
+- [ ] `AccountSubscriptionRenewalWorker` - Renewal reminders
+- [ ] `SignInTokenCleaner` - Magic link cleanup (every minute)
+- [ ] `RefreshSitemap` - SEO sitemap (every 4 hours)
+- [ ] `LessonPublishWorker` - Scheduled publishing (every 10 min)
+- [ ] `DailyReportWorker`, `WeeklyReportWorker`, `MonthlyReportWorker`
+- [ ] `PlaylistRanker`, `TagRanker` - Search ranking
+- [ ] `SyncPodcastsWorker` - Podcast RSS sync
 
-### UI Components
+### Phase 4: External Integrations
+
+- [ ] ConvertKit - Tag `paid_member`, sync `is_pro` (ready, needs keys)
+- [ ] **Customer.io** - Build from scratch (3 endpoints + Inngest jobs)
+- [ ] **Discourse SSO** - Build from scratch
+- [ ] Mixpanel - Port or deprecate
+- [ ] **17 transactional mailers** - Port to Resend/Postmark
+
+### Phase 5: UI Components
 
 - [ ] Video player (Mux)
 - [ ] Progress tracking
 - [ ] Search UI (InstantSearch)
 - [ ] Pricing page
+- [ ] **Lifetime pricing page** (`/forever`)
 - [ ] Subscription management
 - [ ] User profile
+- [ ] **Gift redemption** (`/gifts/claim/[guid]`)
+- [ ] **Instructor upload tools** (if not in CB)
 
-### Cutover
+### Phase 6: Cutover
 
 - [ ] Dual-write webhooks (shadow mode)
+- [ ] **Shadow traffic validation** - Replay webhooks, compare outputs
 - [ ] Flip primary to Coursebuilder
 - [ ] Auth cutover (password reset flow)
 - [ ] DNS switch
+- [ ] **Run reconciliation job** - Verify data consistency
 - [ ] Kill Rails
 
 ---
