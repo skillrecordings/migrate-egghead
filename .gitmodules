@@ -10,3 +10,6 @@
 [submodule "download-egghead"]
 	path = download-egghead
 	url = https://github.com/skillrecordings/download-egghead
+[submodule "skill-front-integration"]
+	path = skill-front-integration
+	url = https://github.com/skillrecordings/skill-front-integration
