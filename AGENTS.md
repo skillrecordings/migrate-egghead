@@ -26,24 +26,73 @@ We're killing **egghead-rails** AND **egghead-next**, consolidating everything o
 
 ### Current Phase
 
-Schema design complete. Next: User/Account migration pipeline.
+**Video migration complete.** Now executing Phase 0 (Migration Control Plane).
+
+---
+
+## CRITICAL: README.md IS THE SOURCE OF TRUTH
+
+**The README.md defines the migration phases and their order.** Always check it before starting work.
+
+### Phase Execution Order (from README)
+
+```
+Phase 0: Minimum Viable Safety     ← CURRENT (epic: 6pv)
+  └─ E2E test, Inngest dev server, idempotency columns
+  └─ Human Gate: 6pv.17
+
+Phase 1: Data Migration            (epic: koh)
+  └─ Users, Orgs, Subscriptions, Progress, Content
+  └─ Human Gate: koh.17
+
+Phase 2: Webhook Handlers          (epic: 5bk)
+  └─ Stripe webhooks → Inngest
+  └─ Human Gate: 15v
+
+Phase 3: Cron Jobs                 (epic: tkd)
+  └─ Sidekiq → Inngest
+
+Phase 4: External Integrations     (epic: qk0)
+  └─ Customer.io, emails
+  └─ Human Gate: esr
+
+Phase 5: UI Components             (epic: r52)
+  └─ Video player, search, pricing
+  └─ Human Gate: sr4
+
+Phase 6: Cutover                   (epic: axl)
+  └─ Shadow mode, DNS flip, kill Rails
+  └─ Human Gates: axl.4, dwa, axl.8, axl.10
+```
+
+**DO NOT skip phases.** Each phase has dependencies and human gates.
 
 ---
 
 ## CRITICAL RULES
 
-### 1. DO NOT Create Beads Without Permission
+### 1. Follow the Phase Order
 
-**NEVER** autonomously create new beads, epics, or subtasks. The migration plan is already defined in `migrate-egghead-39p`.
+**Always check README.md for the current phase.** Work on beads within the current phase only.
 
-- ✅ Work on existing beads when asked
-- ✅ Use `beads_ready()` to see what's next
+- ✅ Check README.md to confirm current phase
+- ✅ Work on beads within that phase's epic
+- ✅ Wait for human gates before proceeding to next phase
+- ❌ **DO NOT** skip ahead to later phases
+- ❌ **DO NOT** work on Phase 1 beads while Phase 0 is incomplete
+
+### 2. Beads: Create OK, Auto-Start NOT OK
+
+Agents **can create beads** to track discovered work. Agents **should not auto-start** beads without user direction.
+
+- ✅ Create beads for discovered issues, gaps, or tasks
+- ✅ Use `beads_ready()` to see what's available
 - ✅ Close beads when work is complete
-- ❌ **DO NOT** create new beads without explicit user approval
-- ❌ **DO NOT** decompose tasks into subtasks without asking first
+- ✅ Present options and let user choose what to work on
+- ❌ **DO NOT** auto-start beads - wait for user to say "work on X"
 - ❌ **DO NOT** use `/swarm` or spawn parallel agents without permission
 
-### 2. Ask Before Major Actions
+### 3. Ask Before Major Actions
 
 Before doing any of these, **ask the user first**:
 
