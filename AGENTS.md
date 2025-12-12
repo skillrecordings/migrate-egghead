@@ -140,21 +140,88 @@ beads_sync()
 
 ## Database Access
 
+### Three Databases
+
+| Database                                      | Connection                                 | Purpose                                           |
+| --------------------------------------------- | ------------------------------------------ | ------------------------------------------------- |
+| Rails PostgreSQL                              | `DATABASE_URL` in `investigation/.env`     | Source of truth for users, subscriptions, lessons |
+| Coursebuilder PlanetScale                     | `NEW_DATABASE_URL` in `investigation/.env` | Target database, tables prefixed `egghead_`       |
+| SQLite (`download-egghead/egghead_videos.db`) | Direct file access                         | Mux video migration tracker                       |
+
 ### Rails PostgreSQL (read-only for analysis)
 
 ```bash
 cd investigation
 pnpm tsx src/queries/subscriptions.ts
+pnpm tsx src/queries/content-structure.ts
 ```
+
+Uses Effect-TS SQL client. See `investigation/src/lib/db.ts`.
 
 ### Coursebuilder PlanetScale
 
-- Schema in `course-builder/packages/adapter-drizzle/src/lib/mysql/schemas/`
+```bash
+cd investigation
+pnpm tsx src/queries/ping-mysql.ts
+```
 
-### download-egghead SQLite
+Uses Effect-TS SQL client. See `investigation/src/lib/mysql.ts`.
 
-- `egghead_videos.db` - courses, lessons, videos, instructors
-- Already 97.5% migrated to Mux
+**Important**: Tables are prefixed with `egghead_` (e.g., `egghead_ContentResource`, `egghead_User`).
+
+Current state:
+
+- 391 `videoResource` records (new uploads via Coursebuilder)
+- 369 `post` records (lessons created in CB)
+- No `lesson` type yet - lessons are `post` type in CB
+
+### download-egghead SQLite (Mux Migration Tracker)
+
+```bash
+cd download-egghead
+sqlite3 egghead_videos.db "SELECT COUNT(*) FROM videos WHERE mux_asset_id IS NOT NULL"
+```
+
+**This is canonical for OLD video migrations** (lesson ID ≤ 10388).
+
+Tables:
+
+- `videos` - 7,634 records, 7,441 with `mux_asset_id`
+- `lessons` - 5,132 records (links to videos via `video_id`)
+- `courses` - 420 records
+- `instructors` - 134 records
+- `tags` - 627 records
+
+**Video Migration Status**:
+| State | Count | Notes |
+|-------|-------|-------|
+| `updated` | 6,764 | Has `mux_asset_id` ✅ |
+| `no_srt` | 677 | On Mux but missing subtitles |
+| `missing_video` | 193 | Source file not found |
+
+### Video Source Timeline
+
+| Era                    | Lesson IDs    | Video Source           | Mux Status                 |
+| ---------------------- | ------------- | ---------------------- | -------------------------- |
+| Ancient (Wistia)       | 1 - ~4425     | Wistia                 | Migrated to Mux via SQLite |
+| Middle (CloudFront)    | ~4426 - 10388 | Homebrew S3/CloudFront | Partially in SQLite        |
+| Modern (Coursebuilder) | 10685+        | Direct Mux upload      | Already on Mux             |
+
+**Cutoff**: Around October 2024 (ID ~10685), new lessons started going directly to Mux via Coursebuilder.
+
+### Querying Tips
+
+```typescript
+// Rails PostgreSQL
+import { runWithDb } from "./src/lib/db.js";
+
+// Coursebuilder MySQL
+import { runWithMysql } from "./src/lib/mysql.js";
+
+// SQLite (direct)
+import sqlite3 from "sqlite3";
+const db = new sqlite3.Database("./egghead_videos.db");
+```
 
 ---
 

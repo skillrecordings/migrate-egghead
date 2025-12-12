@@ -49,7 +49,8 @@ We're killing **two legacy systems** and consolidating onto Coursebuilder:
 - **shadcn/ui centric** - Use shadcn components, not complex egghead-next patterns
 - **Cut the cruft** - Don't port complexity, rebuild with simplicity
 - **No 404s** - Every legacy URL gets a redirect (SEO critical)
-- **Zero downtime** - Gradual cutover with rollback at each step
+- **Minimal downtime** - 5-15 minute cutover window, timed for low traffic
+- **Build tests as you go** - No speculative infrastructure
 
 ---
 
@@ -99,19 +100,22 @@ We're killing **two legacy systems** and consolidating onto Coursebuilder:
 
 ## Phase Details
 
-### Phase 0: Safety Infrastructure
+### Phase 0: Minimum Viable Safety
 
-**Epic**: `6y2` (Testing) + `341` (Data Integrity) + `5qr` (CDC)
+**Goal**: Prove the happy path works, then build safety as we go.
 
-Before touching production data, we need:
+| Task                       | Purpose                                            |
+| -------------------------- | -------------------------------------------------- |
+| ONE E2E test working       | User signs up → gets entitlement → can watch video |
+| Inngest dev server running | Can test webhook handlers locally                  |
+| Idempotency column added   | `stripe_event_id` on relevant tables               |
 
-| Task                                 | Bead      | Purpose                              |
-| ------------------------------------ | --------- | ------------------------------------ |
-| Testing pyramid (Vitest, Playwright) | `6y2`     | No code ships without tests          |
-| CDC via PostgreSQL triggers          | `5qr`     | Sync changes during migration window |
-| Idempotency layer                    | `341.1-2` | Prevent duplicate Stripe processing  |
-| Reconciliation job                   | `341.4`   | Daily PG ↔ PlanetScale checksums     |
-| Webhook deduplication                | `cqi`     | Handle dual-write race conditions    |
+**Not in Phase 0** (build when needed):
+
+- Full testing pyramid - write tests for what you're building
+- CDC triggers - sequential cutover eliminates need
+- Reconciliation jobs - add post-cutover if drift detected
+- Webhook deduplication - shadow mode is read-only, no dual-write
 
 **Human Gate**: `6pv.17` - Approve migration control plane
 
@@ -216,32 +220,43 @@ Port 17 Sidekiq-Cron jobs to Inngest:
 
 **Epic**: `axl` + `04y`
 
+**Target: 5-15 minutes of degraded service, not zero downtime.**
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         CUTOVER SEQUENCE                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  Week 1-2: Shadow Mode                                                      │
+│  Week 1-2: Shadow Mode (READ-ONLY observation)                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Stripe ──┬──► Rails (PRIMARY) ──► PostgreSQL                       │   │
+│  │  Stripe ──┬──► Rails (PRIMARY) ──► PostgreSQL ──► PROCESSES         │   │
 │  │           │                              │                          │   │
 │  │           │                              │ Compare                  │   │
 │  │           │                              ▼                          │   │
-│  │           └──► Coursebuilder (SHADOW) ─► PlanetScale                │   │
+│  │           └──► Coursebuilder (SHADOW) ─► LOGS ONLY (no mutations)   │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
-│  Target: 7+ days, <0.1% divergence                                         │
+│  CB receives webhooks but only logs "would have done X"                    │
+│  Target: 7+ days, fix any divergences                                      │
 │                                                                             │
-│  Week 3: Flip Primary                                                       │
+│  Cutover Day: The Flip (~5 minutes)                                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  Stripe ──┬──► Rails (SHADOW) ────► PostgreSQL (read-only)          │   │
-│  │           │                              │                          │   │
-│  │           │                              │ Verify                   │   │
-│  │           │                              ▼                          │   │
-│  │           └──► Coursebuilder (PRIMARY) ► PlanetScale                │   │
+│  │  T-48h:  Lower DNS TTL to 60s                                       │   │
+│  │  T-1h:   Announce maintenance window                                │   │
+│  │  T-0:    Remove Rails webhook from Stripe (30 sec)                  │   │
+│  │          Enable CB webhook in Stripe (30 sec)                       │   │
+│  │          Update DNS to Vercel (instant, propagation varies)         │   │
+│  │          Rails goes read-only                                       │   │
+│  │  T+5m:   Verify CB processing webhooks                              │   │
+│  │  T+15m:  DNS propagated for most users                              │   │
+│  │  T+1h:   DNS fully propagated globally                              │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
-│  Auth cutover: Password reset campaign 48h before                          │
 │                                                                             │
-│  Week 4: Kill Rails                                                         │
+│  Who gets sad during the 5-minute window:                                  │
+│  • Magic link clicks → "We just upgraded! Click for new link" (auto-send) │
+│  • Mid-checkout users → Stripe handles gracefully (they retry)            │
+│  • Stale DNS cache → Works within 1 hour                                  │
+│                                                                             │
+│  Week after: Kill Rails                                                     │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │  Stripe ────────► Coursebuilder ────────► PlanetScale               │   │
 │  │                                                                     │   │
@@ -289,17 +304,23 @@ Port 17 Sidekiq-Cron jobs to Inngest:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MUX VIDEO MIGRATION: 97.5%                          │
+│                         MUX VIDEO MIGRATION: 97.8%                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   ████████████████████████████████████████████████████░░  7,441 / 7,634    │
+│   ████████████████████████████████████████████████████░░  6,487 / 6,639    │
 │                                                                             │
-│   ✅ updated (with mux_asset_id): 6,764                                     │
-│   ⚠️  no_srt (missing subtitles): 677                                       │
-│   ❌ missing_video (source gone): 193                                       │
+│   ✅ SQLite migrated (ID ≤ 10388):     6,764 on Mux                         │
+│   ✅ Coursebuilder (ID 10685+):          391 on Mux                         │
+│   ⚠️  Gap lessons (ID 10389-10684):      152 need migration                 │
+│      └─ 17 already in Coursebuilder with Mux ✅                             │
+│      └─ 2 already on Mux in Rails ✅                                        │
+│                                                                             │
+│   See: reports/VIDEO_MIGRATION_STATUS.md for execution plan                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Gap Migration Epic**: `migrate-egghead-ddl` - Scripts ready, awaiting execution
 
 ---
 
@@ -364,12 +385,13 @@ Port 17 Sidekiq-Cron jobs to Inngest:
 
 ### Data Integrity (Bead: `341`)
 
-| Gap                        | Risk                 | Mitigation                          |
-| -------------------------- | -------------------- | ----------------------------------- |
-| Dual-write race conditions | Double-charges       | Webhook deduplication (`cqi`)       |
-| Missing idempotency        | Duplicate processing | Store `stripe_event_id` (`341.1-2`) |
-| Post-cutover drift         | Data inconsistency   | Daily reconciliation job (`341.4`)  |
-| No rollback test           | Can't recover        | Test flip back to Rails (`341.7`)   |
+| Gap                 | Risk                 | Mitigation                           |
+| ------------------- | -------------------- | ------------------------------------ |
+| Missing idempotency | Duplicate processing | Store `stripe_event_id` (`341.1-2`)  |
+| Post-cutover drift  | Data inconsistency   | Add reconciliation if drift detected |
+| No rollback test    | Can't recover        | Test flip back to Rails (`341.7`)    |
+
+**Note**: Dual-write race conditions are avoided by design - shadow mode is read-only observation, not dual processing. Only ONE system processes webhooks at any time.
 
 ### SEO Safety (Bead: `34t`)
 
