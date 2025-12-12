@@ -1,8 +1,8 @@
 # Kill egghead-rails and egghead-next
 
 > **Mission**: Consolidate egghead.io onto Coursebuilder  
-> **Status**: Planning complete, ready for execution  
-> **Updated**: December 11, 2025
+> **Status**: Video migration complete, User migration next  
+> **Updated**: December 12, 2025
 
 **For AI agents**: Read [AGENTS.md](./AGENTS.md) first - contains critical rules and context.
 
@@ -300,27 +300,30 @@ Port 17 Sidekiq-Cron jobs to Inngest:
 | Instructors | 134   |                  |
 | Tags        | 627   |                  |
 
-### Video Migration Status
+### Video Migration Status ✅ COMPLETE
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MUX VIDEO MIGRATION: 97.8%                          │
+│                         MUX VIDEO MIGRATION: 81.7% RAILS COVERAGE           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   ████████████████████████████████████████████████████░░  6,487 / 6,639    │
+│   ████████████████████████████████████████░░░░░░░░░░░░  8,233 / 10,082     │
 │                                                                             │
-│   ✅ SQLite migrated (ID ≤ 10388):     6,764 on Mux                         │
-│   ✅ Coursebuilder (ID 10685+):          391 on Mux                         │
-│   ⚠️  Gap lessons (ID 10389-10684):      152 need migration                 │
-│      └─ 17 already in Coursebuilder with Mux ✅                             │
-│      └─ 2 already on Mux in Rails ✅                                        │
+│   ✅ Bulk Rails update applied: 6,764 lessons updated                       │
+│   ✅ Gap videos on Mux: 131/146 (15 errored - missing S3 sources)           │
+│   ✅ SQLite has mux_playback_id for all 6,895 videos                        │
 │                                                                             │
-│   See: reports/VIDEO_MIGRATION_STATUS.md for execution plan                 │
+│   Remaining ~1,849 without Mux URLs:                                        │
+│   • Lessons without videos (text-only, retired)                             │
+│   • Missing S3 source files (193 identified)                                │
+│   • Draft/unpublished lessons                                               │
+│   • Coursebuilder-native lessons (served via CB, not Rails)                 │
+│                                                                             │
+│   See: reports/VIDEO_MIGRATION_STATUS.md                                    │
+│   See: reports/ERRORED_MUX_ASSETS_INVESTIGATION.md (15 failed)              │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-**Gap Migration Epic**: `migrate-egghead-ddl` - Scripts ready, awaiting execution
 
 ---
 
@@ -479,6 +482,14 @@ beads_sync()
 ```
 
 ### Current Status
+
+**Completed:**
+
+- ✅ Video migration - 81.7% Rails coverage (8,233/10,082 lessons with Mux URLs)
+- ✅ Gap video upload - 131/146 on Mux
+- ✅ SQLite playback IDs - 6,895 videos tracked
+
+**Next:**
 
 ```bash
 # Next ready task:
