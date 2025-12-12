@@ -1,32 +1,43 @@
 # Video Migration Status Report
 
 > **Generated**: December 12, 2025  
-> **Updated**: December 12, 2025 - **Complete Execution Plan Added**  
+> **Updated**: December 12, 2025 - **BULK RAILS UPDATE COMPLETE** ✅  
 > **Purpose**: Track video migration from legacy sources to Mux  
 > **Goal**: All videos served via Mux playback IDs
 
-### Latest Updates
+### Latest Updates (Dec 12, 2025)
 
-- ✅ Added complete step-by-step execution plan with 6 steps
-- ✅ Added verification checklist (before/during/after each step)
-- ✅ Added rollback procedures for Mux upload and Rails backfill failures
-- ✅ Documented new scripts needed: `add-gap-lessons.mjs` and `backfill-rails-mux-urls.mjs`
-- ✅ Confirmed 17 Coursebuilder lessons already complete with Mux
+- ✅ **BULK RAILS UPDATE COMPLETE**: 6,764 lessons updated with Mux stream URLs
+- ✅ **Rails Coverage**: 8,233 / 10,082 lessons (81.7%) now have Mux URLs
+- ✅ **GAP VIDEO MIGRATION COMPLETE**: 131/146 gap videos successfully on Mux
+- ⚠️ **15 Errored Assets Documented**: 14 missing S3 sources (403), 1 subtitle validation error
+- ✅ **SQLite Updated**: All 6,895 videos now have `mux_playback_id` column populated
+- ✅ **Investigation Report**: `reports/ERRORED_MUX_ASSETS_INVESTIGATION.md`
 
 ---
 
 ## Executive Summary
 
-| Era                    | Lesson IDs    | Count   | Video Source           | Mux Status                          |
-| ---------------------- | ------------- | ------- | ---------------------- | ----------------------------------- |
-| Ancient (Wistia)       | 1 - ~4425     | ~2,668  | Wistia                 | ✅ Migrated via SQLite              |
-| Middle (CloudFront)    | ~4426 - 10388 | ~3,095  | Homebrew S3/CloudFront | ✅ Migrated via SQLite              |
-| **Gap**                | 10389 - 10684 | **171** | Mixed                  | ⚠️ **PARTIALLY ON MUX** (see below) |
-| Modern (Coursebuilder) | 10685+        | ~250    | Direct Mux upload      | ✅ Already on Mux                   |
+| Era                    | Lesson IDs    | Count   | Video Source           | Mux Status                        |
+| ---------------------- | ------------- | ------- | ---------------------- | --------------------------------- |
+| Ancient (Wistia)       | 1 - ~4425     | ~2,668  | Wistia                 | ✅ Migrated via SQLite            |
+| Middle (CloudFront)    | ~4426 - 10388 | ~3,095  | Homebrew S3/CloudFront | ✅ Migrated via SQLite            |
+| **Gap**                | 10389 - 10684 | **146** | Mixed                  | ✅ **131 ON MUX** / ⚠️ 15 errored |
+| Modern (Coursebuilder) | 10685+        | ~250    | Direct Mux upload      | ✅ Already on Mux                 |
 
-**Total Published Lessons**: 6,639  
-**Already on Mux**: ~6,491 (97.8%)  
-**Gap needing SQLite migration**: 152 lessons (2.2%)
+**Total Lessons in Rails**: 10,082  
+**With Mux URLs**: 8,233 (81.7%)  
+**Gap videos completed**: 131/146 (89.7%)
+**Gap videos errored**: 15 (missing S3 sources or subtitle issues)
+
+### Remaining ~1,849 Lessons Without Mux URLs
+
+These are likely:
+
+- Lessons without videos (text-only, retired)
+- Errored/missing source files (193 identified in SQLite)
+- Draft/unpublished lessons
+- Lessons created directly in Coursebuilder (ID > 10684, served via CB not Rails)
 
 ---
 
