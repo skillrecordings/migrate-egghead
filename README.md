@@ -1,8 +1,8 @@
 # Kill egghead-rails and egghead-next
 
 > **Mission**: Consolidate egghead.io onto Coursebuilder  
-> **Status**: Video migration complete, User migration next  
-> **Updated**: December 12, 2025
+> **Status**: Video migration complete, Content migration next (before users)  
+> **Updated**: December 13, 2025
 
 **For AI agents**: Read [AGENTS.md](./AGENTS.md) first - contains critical rules and context.
 
@@ -123,25 +123,47 @@ We're killing **two legacy systems** and consolidating onto Coursebuilder:
 
 ---
 
-### Phase 1: Data Migration
+### Phase 1A: Content Migration (FIRST)
+
+**Epic**: `ntu`
+
+Content has no user dependencies - migrate first to enable testing.
+
+| Data              | Records | Bead    | Notes                              |
+| ----------------- | ------- | ------- | ---------------------------------- |
+| ID mapping tables | -       | `ntu.1` | Enable legacy lookups              |
+| Tags              | 627     | `ntu.2` | → egghead_Tag                      |
+| Courses (series)  | 420     | `ntu.3` | → ContentResource type='course'    |
+| Lessons           | 5,132   | `ntu.4` | → ContentResource type='lesson'    |
+| Relationships     | 15K+    | `ntu.5` | ContentResourceResource + taggings |
+| Sanity merge      | -       | `ntu.6` | 3-way: Rails > Sanity > defaults   |
+| Validation        | -       | `ntu.7` | Verify counts and integrity        |
+
+**Human Gate**: `ntu.8` - Review content migration before users
+
+**Research**: See `reports/CONTENT_MIGRATION_RESEARCH.md` for full schema mappings.
+
+---
+
+### Phase 1B: User Migration
 
 **Epic**: `phase-1`
 
-Migrate all data from Rails PostgreSQL to Coursebuilder PlanetScale:
+Migrate users/accounts after content is in place:
 
-| Data                       | Records      | Bead        | Status       |
-| -------------------------- | ------------ | ----------- | ------------ |
-| Users                      | 699,318      | `phase-1.1` | Ready        |
-| Organizations (accounts)   | 94,679       | `phase-1.2` | Ready        |
-| Subscriptions              | 3,335 active | `phase-1.3` | Ready        |
-| Progress                   | 2,957,917    | `phase-1.4` | Ready        |
-| Content (courses, lessons) | 420 + 5,132  | `phase-1.5` | 97.5% on Mux |
-| Gifts                      | ~500         | `phase-1.6` | Ready        |
-| Teams                      | 266          | `phase-1.7` | Ready        |
+| Data                     | Records      | Bead        | Status                                      |
+| ------------------------ | ------------ | ----------- | ------------------------------------------- |
+| Users                    | 699,318      | `phase-1.1` | Ready                                       |
+| Organizations (accounts) | 94,679       | `phase-1.2` | Ready                                       |
+| Instructors              | 134          | `phase-1.3` | Links users→content via ContentContribution |
+| Subscriptions            | 3,335 active | `phase-1.4` | Ready                                       |
+| Progress                 | 2,957,917    | `phase-1.5` | Needs users + content                       |
+| Gifts                    | ~500         | `phase-1.6` | Ready                                       |
+| Teams                    | 266          | `phase-1.7` | Ready                                       |
 
 **Validation**: `phase-1.8` - Reconciliation queries
 
-**Human Gate**: `phase-1.9` - Approve migration before execution
+**Human Gate**: `phase-1.9` - Approve user migration before execution
 
 ---
 
@@ -493,13 +515,14 @@ beads_sync()
 - ✅ SQLite playback IDs - 6,895 videos tracked
 - ✅ Beads restructure - Human-readable phase-aligned IDs
 
-**Current Phase: 0 (Minimum Viable Safety)**
+**Current Phase: 1A (Content Migration)**
 
 ```bash
 # Next ready tasks:
-migrate-egghead-phase-0.1 - ONE E2E test working
-migrate-egghead-phase-0.2 - Inngest dev server running
-migrate-egghead-phase-0.3 - Add stripe_event_id columns
+migrate-egghead-ntu.1 - Create ID mapping tables in PlanetScale
+migrate-egghead-ntu.2 - Migrate tags (627 records)
+migrate-egghead-ntu.3 - Migrate courses (420 series)
+migrate-egghead-ntu.4 - Migrate lessons (5,132 records)
 ```
 
 ---
