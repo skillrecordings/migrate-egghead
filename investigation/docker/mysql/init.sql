@@ -9,6 +9,9 @@ SET CHARACTER SET utf8mb4;
 DROP TABLE IF EXISTS `egghead_ContentResourceResource`;
 DROP TABLE IF EXISTS `egghead_ContentResource`;
 DROP TABLE IF EXISTS `egghead_User`;
+DROP TABLE IF EXISTS `_migration_lesson_map`;
+DROP TABLE IF EXISTS `_migration_course_map`;
+DROP TABLE IF EXISTS `_migration_tag_map`;
 
 -- ============================================================================
 -- User Table
@@ -71,6 +74,41 @@ CREATE TABLE `egghead_ContentResourceResource` (
     REFERENCES `egghead_ContentResource` (`id`) 
     ON DELETE CASCADE 
     ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- ID Mapping Tables for URL Redirects
+-- Maps legacy Rails IDs to new Coursebuilder IDs for redirect handling
+-- ============================================================================
+
+CREATE TABLE `_migration_tag_map` (
+  `rails_id` INT NOT NULL PRIMARY KEY,
+  `cb_id` VARCHAR(255) NOT NULL,
+  `rails_name` VARCHAR(255),
+  `rails_slug` VARCHAR(255),
+  INDEX `idx_cb_id` (`cb_id`),
+  INDEX `idx_rails_slug` (`rails_slug`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `_migration_course_map` (
+  `rails_id` INT NOT NULL PRIMARY KEY,
+  `cb_id` VARCHAR(255) NOT NULL,
+  `rails_title` VARCHAR(500),
+  `rails_slug` VARCHAR(255),
+  `source_table` ENUM('series', 'playlists') DEFAULT 'series',
+  INDEX `idx_cb_id` (`cb_id`),
+  INDEX `idx_rails_slug` (`rails_slug`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `_migration_lesson_map` (
+  `rails_id` INT NOT NULL PRIMARY KEY,
+  `cb_id` VARCHAR(255) NOT NULL,
+  `rails_title` VARCHAR(500),
+  `rails_slug` VARCHAR(255),
+  `video_resource_id` VARCHAR(255),
+  INDEX `idx_cb_id` (`cb_id`),
+  INDEX `idx_rails_slug` (`rails_slug`),
+  INDEX `idx_video` (`video_resource_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================================

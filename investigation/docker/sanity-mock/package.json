@@ -4,12 +4,13 @@
   "description": "Mock GraphQL server for Sanity API responses",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "tsx server.ts",
+    "dev": "tsx --watch server.ts"
   },
   "dependencies": {
     "graphql": "^16.8.1",
-    "graphql-yoga": "^5.1.1"
+    "graphql-yoga": "^5.1.1",
+    "tsx": "^4.7.0"
   },
   "engines": {
     "node": ">=20"

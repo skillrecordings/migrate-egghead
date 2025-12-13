@@ -537,18 +537,43 @@ beads_sync()
 
 **Current Phase: 1A (Content Migration)**
 
-POC complete - 2 courses migrated and verified. Ready for full migration.
+POC complete - 2 courses migrated and verified. Now scaling up test data incrementally.
+
+### 🎯 CURRENT TASK: Incremental Test Data Expansion (Bead: `2mr`)
+
+Scaling test dataset logarithmically to catch edge cases before full migration:
+
+```
+Phase   Courses   Lessons   Coverage   Status
+─────────────────────────────────────────────────────
+  1         5        90       1.2%    ✅ DONE (edge cases)
+  2        20       350       6.8%    🔄 IN PROGRESS
+  3        80      1400      27.3%    Pending
+  4       200      3500      68.2%    Pending
+  5       420      5132     100.0%    Full content
+```
+
+**Phase 2 adds**: Instructor diversity (10+), tag variety (top 20), size extremes (1-lesson AND 50+)
 
 ```bash
-# POC Complete:
+# Target CLI:
+bun docker:reset --phase 2      # Use phase 2 dataset
+bun docker:reset --phase 3      # Use phase 3 dataset
+```
+
+### Completed
+
+```bash
 migrate-egghead-j9b   - POC epic (CLOSED)
 migrate-egghead-15y   - Infrastructure + validation (CLOSED)
+```
 
-# Next ready tasks:
-migrate-egghead-ntu.1 - Create ID mapping tables in PlanetScale
-migrate-egghead-ntu.2 - Migrate tags (627 records)
-migrate-egghead-ntu.3 - Migrate courses (420 series)
-migrate-egghead-ntu.4 - Migrate lessons (5,132 records)
+### Next After Phase 2
+
+```bash
+migrate-egghead-ntu.1  - Create ID mapping tables in PlanetScale
+migrate-egghead-ntu.12 - videoResource type and Mux integration
+migrate-egghead-ntu.8  - [HUMAN] Review content migration
 ```
 
 **POC Artifacts:**

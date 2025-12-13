@@ -6,8 +6,8 @@ WORKDIR /app
 # Copy package files
 COPY package.json ./
 
-# Install dependencies
-RUN npm install --production
+# Install dependencies (including tsx for TypeScript execution)
+RUN npm install
 
 # Copy source files
 COPY schema.ts ./
@@ -17,5 +17,5 @@ COPY server.ts ./
 # Expose GraphQL server port
 EXPOSE 4000
 
-# Start server
-CMD ["npm", "start"]
+# Start server with tsx
+CMD ["npx", "tsx", "server.ts"]

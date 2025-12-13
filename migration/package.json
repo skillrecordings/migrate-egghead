@@ -1,0 +1,43 @@
+{
+  "name": "migration",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "test:unit": "bun test src/",
+    "test:integration": "bun test scripts/*.test.ts",
+    "test:e2e": "E2E_TEST=1 bun test tests/e2e-migration.test.ts",
+    "docker:reset": "bun scripts/docker-reset.ts",
+    "docker:up": "cd ../investigation/docker && docker-compose up -d",
+    "docker:down": "cd ../investigation/docker && docker-compose down -v",
+    "docker:logs": "cd ../investigation/docker && docker-compose logs -f",
+    "tui": "bun src/tui/index.ts",
+    "tui:dev": "USE_DOCKER=1 bun src/tui/index.ts",
+    "watch": "USE_DOCKER=1 bun scripts/watch-migration.ts",
+    "watch:once": "USE_DOCKER=1 bun scripts/watch-migration.ts --once",
+    "migrate:tags": "USE_DOCKER=1 bun scripts/migrate-tags.ts",
+    "migrate:courses": "USE_DOCKER=1 bun scripts/migrate-courses.ts",
+    "migrate:lessons": "USE_DOCKER=1 bun scripts/migrate-lessons.ts",
+    "migrate:all": "USE_DOCKER=1 bun scripts/migrate-tags.ts && USE_DOCKER=1 bun scripts/migrate-courses.ts && USE_DOCKER=1 bun scripts/migrate-lessons.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.93.8",
+    "@effect/platform-bun": "^0.86.0",
+    "@effect/sql": "^0.48.6",
+    "@effect/sql-pg": "^0.49.7",
+    "@opentui/core": "^0.1.60",
+    "@paralleldrive/cuid2": "^3.0.4",
+    "@portabletext/markdown": "^1.0.7",
+    "effect": "^3.19.12",
+    "mysql2": "^3.15.3",
+    "postgres": "^3.4.7",
+    "zod": "^4.1.13"
+  }
+}

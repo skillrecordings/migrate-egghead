@@ -4,19 +4,20 @@
   "description": "Database investigation toolkit for egghead migration analysis",
   "type": "module",
   "scripts": {
-    "verify": "tsx src/queries/verify-schema.ts",
-    "investigate": "tsx src/cli.ts",
-    "subscriptions": "tsx src/queries/subscriptions.ts",
-    "gifts": "tsx src/queries/gifts.ts",
-    "tenants": "tsx src/queries/tenants.ts",
-    "webhooks": "tsx src/queries/webhooks.ts",
-    "migration-readiness": "tsx src/queries/migration-readiness.ts",
-    "ping-mysql": "tsx src/queries/ping-mysql.ts",
-    "test": "vitest",
-    "test:watch": "vitest --watch",
+    "verify": "bun src/queries/verify-schema.ts",
+    "investigate": "bun src/cli.ts",
+    "subscriptions": "bun src/queries/subscriptions.ts",
+    "gifts": "bun src/queries/gifts.ts",
+    "tenants": "bun src/queries/tenants.ts",
+    "webhooks": "bun src/queries/webhooks.ts",
+    "migration-readiness": "bun src/queries/migration-readiness.ts",
+    "ping-mysql": "bun src/queries/ping-mysql.ts",
+    "export:poc": "bun scripts/export-poc-courses.ts",
+    "export:sample": "bun scripts/export-sample.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
     "test:docker:up": "cd docker && docker-compose up -d",
     "test:docker:down": "cd docker && docker-compose down",
-    "test:docker:run": "dotenv -e docker/.env.docker -- echo 'Migration tests will run here'",
     "test:docker": "bash docker/run-tests.sh"
   },
   "dependencies": {
@@ -29,7 +30,6 @@
     "@paralleldrive/cuid2": "^3.0.4",
     "@portabletext/markdown": "^1.0.7",
     "@sanity/client": "^7.13.2",
-    "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.5.0",
     "dotenv-flow": "^4.1.0",
     "effect": "^3.19.11",
@@ -37,9 +37,8 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@types/node": "^25.0.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "vitest": "^2.1.8"
+    "@types/bun": "latest",
+    "@types/better-sqlite3": "^7.6.13",
+    "typescript": "^5.9.3"
   }
 }

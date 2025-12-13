@@ -1,0 +1,36 @@
+--- a/scripts/migrate-tags.test.ts
++++ b/scripts/migrate-tags.test.ts
+@@ -85,11 +85,11 @@
+     expect(tags.length).toBe(1);
+ 
+-    const tag = tags[0] as { id: string; type: string; fields: string };
++    const tag = tags[0] as { id: string; type: string; fields: any };
+     expect(tag.id).toBe("test_tag_1");
+     expect(tag.type).toBe("topic");
+ 
+-    const fields = JSON.parse(tag.fields);
++    const fields = tag.fields; // MySQL2 auto-parses JSON
+     expect(fields.name).toBe("Test Tag");
+     expect(fields.legacyId).toBe(999);
+ 
+@@ -174,9 +174,9 @@
+     const found = Array.isArray(rows) ? rows : [];
+     expect(found.length).toBe(1);
+ 
+-    const tag = found[0] as { id: string; fields: string };
++    const tag = found[0] as { id: string; fields: any };
+     expect(tag.id).toBe("tag_1");
+ 
+-    const fields = JSON.parse(tag.fields);
++    const fields = tag.fields; // MySQL2 auto-parses JSON
+     expect(fields.legacyId).toBe(42);
+ 
+@@ -230,7 +230,7 @@
+     expect(updated.length).toBe(1);
+ 
+-    const tag = updated[0] as { id: string; fields: string };
+-    const fields = JSON.parse(tag.fields);
++    const tag = updated[0] as { id: string; fields: any };
++    const fields = tag.fields; // MySQL2 auto-parses JSON
+     expect(fields.name).toBe("Updated");
+     expect(fields.legacyId).toBe(legacyId);

@@ -112,7 +112,7 @@ export function verifyContentResourceStructure(
       expect(fields).toHaveProperty("slug");
       expect(fields).toHaveProperty("title");
       expect(fields).toHaveProperty("state");
-      expect(fields).toHaveProperty("legacyRailsSeriesId");
+      expect(fields).toHaveProperty("legacyRailsPlaylistId");
       break;
 
     case "lesson":

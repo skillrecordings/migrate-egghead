@@ -251,6 +251,415 @@ export const lessons = [
     eggheadLessonId: 10005,
     state: "draft",
   },
+  {
+    _id: "lesson-claude-1",
+    _type: "lesson",
+    _createdAt: "2024-11-15T10:00:00Z",
+    title: "Getting Started with Claude Code CLI",
+    slug: { current: "getting-started-claude-code-cli" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-1",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Install and configure Claude Code CLI for AI-powered development workflows.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-1",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Learn how to install Claude Code CLI, set up authentication, and run your first AI-assisted coding session.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-code-intro.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+    ],
+    resources: [
+      {
+        title: "Claude Code Documentation",
+        url: "https://docs.anthropic.com/claude-code",
+        type: "documentation",
+      },
+    ],
+    eggheadLessonId: 10685,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-2",
+    _type: "lesson",
+    _createdAt: "2024-11-16T10:00:00Z",
+    title: "Navigating Codebases with AI",
+    slug: { current: "navigating-codebases-with-ai" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-2",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Use Claude Code to explore and understand large codebases quickly.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-2",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Discover how to ask Claude about code architecture, find functions, and trace dependencies across your project.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-navigate.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+    ],
+    resources: [],
+    eggheadLessonId: 10686,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-3",
+    _type: "lesson",
+    _createdAt: "2024-11-17T10:00:00Z",
+    title: "Refactoring Code with Claude",
+    slug: { current: "refactoring-code-with-claude" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-3",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Learn safe refactoring patterns using AI assistance and automated testing.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-3",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Master the art of refactoring with Claude: extract functions, rename variables, and modernize patterns safely.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-refactor.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+      {
+        name: "typescript",
+        version: "5.3.0",
+        url: "https://www.typescriptlang.org/",
+      },
+    ],
+    resources: [],
+    eggheadLessonId: 10687,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-4",
+    _type: "lesson",
+    _createdAt: "2024-11-18T10:00:00Z",
+    title: "Writing Tests with AI Assistance",
+    slug: { current: "writing-tests-ai-assistance" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-4",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Generate comprehensive test suites using Claude Code's understanding of your codebase.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-4",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Learn how to prompt Claude to write unit tests, integration tests, and edge case coverage.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-tests.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "vitest",
+        version: "1.0.0",
+        url: "https://vitest.dev/",
+      },
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+    ],
+    resources: [],
+    eggheadLessonId: 10688,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-5",
+    _type: "lesson",
+    _createdAt: "2024-11-19T10:00:00Z",
+    title: "Debugging with Claude Code",
+    slug: { current: "debugging-with-claude-code" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-5",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Track down bugs faster by leveraging AI to analyze stack traces and error patterns.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-5",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Use Claude to interpret error messages, suggest fixes, and prevent similar issues in the future.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-debug.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+    ],
+    resources: [],
+    eggheadLessonId: 10689,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-6",
+    _type: "lesson",
+    _createdAt: "2024-11-20T10:00:00Z",
+    title: "Context Management and Prompting Strategies",
+    slug: { current: "context-management-prompting-strategies" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-6",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Master effective prompting techniques to get the best results from Claude Code.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-6",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Learn how to structure prompts, manage context windows, and communicate clearly with AI for better code generation.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-prompting.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+    ],
+    resources: [
+      {
+        title: "Anthropic Prompt Engineering Guide",
+        url: "https://docs.anthropic.com/prompting",
+        type: "documentation",
+      },
+    ],
+    eggheadLessonId: 10690,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-7",
+    _type: "lesson",
+    _createdAt: "2024-11-21T10:00:00Z",
+    title: "Building Features with AI Pair Programming",
+    slug: { current: "building-features-ai-pair-programming" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-7",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Ship production features faster by collaborating with Claude as your pair programmer.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-7",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "End-to-end workflow: planning, implementation, testing, and code review with AI assistance.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-features.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+      {
+        name: "react",
+        version: "19.0.0",
+        url: "https://react.dev/",
+      },
+    ],
+    resources: [],
+    eggheadLessonId: 10691,
+    state: "published",
+  },
+  {
+    _id: "lesson-claude-8",
+    _type: "lesson",
+    _createdAt: "2024-11-22T10:00:00Z",
+    title: "Advanced Claude Code Workflows",
+    slug: { current: "advanced-claude-code-workflows" },
+    description: [
+      {
+        _type: "block",
+        _key: "desc-claude-8",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Custom agents, automation scripts, and power-user techniques for maximum productivity.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    body: [
+      {
+        _type: "block",
+        _key: "body-claude-8",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Explore advanced patterns: custom MCP servers, multi-agent coordination, and CI/CD integration.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    thumbnailUrl: "https://example.com/thumbnails/claude-advanced.jpg",
+    collaborators: [{ _ref: "instructor-joel", role: "instructor" }],
+    softwareLibraries: [
+      {
+        name: "claude-code",
+        version: "1.0.0",
+        url: "https://claude.ai/code",
+      },
+    ],
+    resources: [
+      {
+        title: "Model Context Protocol Specification",
+        url: "https://spec.modelcontextprotocol.io",
+        type: "documentation",
+      },
+    ],
+    eggheadLessonId: 10692,
+    state: "published",
+  },
 ];
 
 export const courses = [
@@ -314,6 +723,43 @@ export const courses = [
     ],
     collaborators: [{ _ref: "instructor-2", role: null }],
     eggheadSeriesId: 5002,
+    state: "published",
+  },
+  {
+    _id: "claude-code-essentials-6d87",
+    _type: "course",
+    _createdAt: "2024-11-15T10:00:00Z",
+    title: "Claude Code Essentials",
+    slug: { current: "claude-code-essentials" },
+    description: [
+      {
+        _type: "block",
+        _key: "course-desc-claude",
+        style: "normal",
+        children: [
+          {
+            _type: "span",
+            text: "Master the Claude Code CLI for AI-assisted development. Learn to navigate codebases, run tests, and ship features with AI pair programming.",
+            marks: [],
+          },
+        ],
+      },
+    ],
+    image: {
+      asset: { _ref: "image-claude-code" },
+    },
+    lessons: [
+      { _ref: "lesson-claude-1", _key: "lesson-ref-claude-1" },
+      { _ref: "lesson-claude-2", _key: "lesson-ref-claude-2" },
+      { _ref: "lesson-claude-3", _key: "lesson-ref-claude-3" },
+      { _ref: "lesson-claude-4", _key: "lesson-ref-claude-4" },
+      { _ref: "lesson-claude-5", _key: "lesson-ref-claude-5" },
+      { _ref: "lesson-claude-6", _key: "lesson-ref-claude-6" },
+      { _ref: "lesson-claude-7", _key: "lesson-ref-claude-7" },
+      { _ref: "lesson-claude-8", _key: "lesson-ref-claude-8" },
+    ],
+    collaborators: [{ _ref: "instructor-joel", role: null }],
+    eggheadSeriesId: null,
     state: "published",
   },
 ];

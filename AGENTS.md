@@ -21,12 +21,31 @@ We're killing **egghead-rails** AND **egghead-next**, consolidating everything o
 - **699K users** to migrate
 - **3,335 active subscriptions** (all in modern `account_subscriptions` table)
 - **2.9M progress records** to migrate
-- **420 courses**, **5,132 lessons**
+- **427 official courses** (playlists with `visibility_state='indexed'`)
+- **~5,025 lessons in courses** + **1,650 standalone lessons**
 - **97.5% of videos already on Mux**
+
+> ⚠️ **CRITICAL SCHEMA NOTE**: See `reports/RAILS_SCHEMA_REFERENCE.md` for the authoritative Rails schema documentation.
+>
+> - Playlists table has 1.37M rows but only 437 are official courses (`visibility_state='indexed'`)
+> - Join table is `tracklists` (polymorphic), NOT `playlist_lessons`
+> - `series_id` on lessons is DEPRECATED - do not use
 
 ### Current Phase
 
-**POC complete.** Content migration validated. Now executing Phase 1A (Full Content Migration).
+> **🚨 PRIORITY: Complete Phased Content Migration (Phases 3-5) BEFORE anything else.**
+>
+> We have a logarithmic test scaling approach:
+>
+> - Phase 1: 5 courses ✅ (curated, tested)
+> - Phase 2: 20 courses ✅ (curated, tested)
+> - Phase 3: 80 courses ⏳ (algorithmic - IN PROGRESS)
+> - Phase 4: 200 courses ⏳ (algorithmic)
+> - Phase 5: 420 courses ⏳ (full production)
+>
+> **DO NOT work on other beads until Phases 3-5 are complete and E2E tests pass.**
+
+**POC complete.** Content migration validated. Now executing Phased Content Migration (Phases 3-5).
 
 ### POC Learnings (December 2025)
 
@@ -135,18 +154,135 @@ Before doing any of these, **ask the user first**:
 migrate-egghead/
 ├── AGENTS.md                 # THIS FILE - read first
 ├── README.md                 # Project overview and plan
-├── .beads/                   # Issue tracking - DO NOT CREATE NEW BEADS
+├── LORE.md                   # Project context and history
+├── .beads/                   # Issue tracking
 ├── course-builder/           # Target platform (submodule)
 ├── download-egghead/         # Media migration toolkit (SQLite DBs)
 ├── egghead-next/             # Legacy frontend (submodule) - reference only
 ├── egghead-rails/            # Legacy backend (submodule) - reference only
-├── investigation/            # Effect-TS analysis toolkit
+├── investigation/            # Read-only analysis toolkit (Effect-TS)
+├── migration/                # Migration scripts (bun) - THE EXECUTION LAYER
 └── reports/                  # Analysis documents
     ├── COURSEBUILDER_SCHEMA_ANALYSIS.md  # Schema mapping (START HERE)
     ├── STRIPE_WEBHOOK_MIGRATION.md
     ├── MIGRATION_DATA_REPORT.md
     └── UI_MIGRATION_ANALYSIS.md
 ```
+
+---
+
+## The `migration/` Directory (Control Plane)
+
+**This is where the actual migration happens.** Everything else is analysis. This is action.
+
+### Philosophy
+
+> "If we can get the DATA locked down and pristine, the UI is easy af."
+
+Focus on data correctness. The UI (course-builder/apps/egghead) comes later.
+
+### Structure
+
+```
+migration/
+├── scripts/
+│   ├── docker-reset.ts       # Docker setup with cached data
+│   ├── migrate-tags.ts       # Tag migration (627 tags)
+│   ├── migrate-courses.ts    # Course migration (420 courses)
+│   └── migrate-lessons.ts    # Lesson migration (5,132 lessons)
+├── src/
+│   ├── lib/
+│   │   ├── db.ts             # Database connections
+│   │   ├── sql-gen.ts        # SQL generation utilities
+│   │   ├── *-mapper.ts       # Field mapping (Rails → CB)
+│   │   └── event-types.ts    # Migration event types
+│   └── tui/                  # Terminal UI for monitoring
+├── tests/
+│   └── e2e.test.ts           # End-to-end migration test
+└── docker/                   # Generated SQL for Docker
+```
+
+### Docker Stack
+
+```bash
+bun docker:reset     # Start/reset all containers (uses cache)
+bun docker:reset --live  # Re-export from production
+```
+
+| Service     | Port | Purpose                    |
+| ----------- | ---- | -------------------------- |
+| PostgreSQL  | 5433 | Rails source (read-only)   |
+| MySQL       | 3307 | Coursebuilder target       |
+| Sanity Mock | 4000 | GraphQL for modern courses |
+
+### Migration Scripts
+
+Each script has:
+
+- `--dry-run` flag for preview
+- `--stream` flag for TUI integration
+- Unit tests in same directory
+
+```bash
+# Always dry-run first!
+bun scripts/migrate-tags.ts --dry-run
+bun scripts/migrate-courses.ts --dry-run
+bun scripts/migrate-lessons.ts --dry-run
+
+# Then execute
+bun scripts/migrate-tags.ts
+bun scripts/migrate-courses.ts
+bun scripts/migrate-lessons.ts
+```
+
+### Database Connections in migration/
+
+```typescript
+// Rails PostgreSQL (source)
+import { railsDb, closeAll } from "./src/lib/db";
+const lessons = await railsDb`SELECT * FROM lessons LIMIT 10`;
+
+// MySQL (target) - use mysql2, NOT @planetscale/database
+import mysql from "mysql2/promise";
+const conn = await mysql.createConnection({
+  host: "localhost",
+  port: 3307,
+  user: "root",
+  password: "root",
+  database: "coursebuilder_test",
+});
+```
+
+**Important**: Use `mysql2` for Docker compatibility. The `@planetscale/database` client only works with PlanetScale's HTTP API.
+
+### Test Commands
+
+```bash
+bun test              # All tests (98 passing)
+bun test:unit         # Unit tests only (fast)
+bun test:integration  # Integration tests (needs Docker)
+bun test:e2e          # E2E migration verification
+```
+
+---
+
+## Tooling: Use Bun
+
+**All migration scripts use bun.** Not tsx, not node, not pnpm.
+
+```bash
+# In migration/ directory
+bun add <package>           # Add dependencies
+bun run scripts/foo.ts      # Run scripts
+bun test                    # Run tests
+```
+
+When creating new packages or scripts:
+
+- Use `bun init` to initialize
+- Use `bun add` to install dependencies
+- Never manually write package.json - let bun manage it
+- Use the `postgres` package for database access (simpler than Effect SQL for scripts)
 
 ---
 
@@ -399,6 +535,204 @@ Before migrating any entity type:
 - Creating database migrations
 - Any destructive operations
 - Creating PRs
+
+---
+
+## Migration Patterns (From the Lore)
+
+These patterns come from the indexed PDF library. **Query pdf-brain when you hit these situations.**
+
+### Strangler Fig Pattern (Newman - Building Microservices)
+
+> "Inspired by a type of plant, the pattern describes the process of wrapping an old system with the new system over time, allowing the new system to take over more and more features of the old system incrementally."
+
+**When to use**: We're doing this. Rails is the fig tree being strangled. Coursebuilder wraps it.
+
+**Key insight**: Route by route, feature by feature. Never big bang.
+
+```
+pdf-brain_search(query="strangler fig pattern incremental migration")
+```
+
+### Expand/Contract Pattern (Ambler - Refactoring Databases)
+
+> "The transition period is the time during which both the old and new schema exist simultaneously."
+
+**The three phases**:
+
+1. **Expand**: Add new column/table, keep old one
+2. **Migrate**: Copy data, run both in parallel with sync triggers
+3. **Contract**: Remove old column/table after transition period
+
+**When to use**: Any schema change. We're doing this with the mapping tables (`_migration_*_map`).
+
+```
+pdf-brain_search(query="transition period deprecation synchronization trigger")
+```
+
+### Synchronization Triggers (Ambler)
+
+> "Prefer triggers over views or batch synchronization... triggers run in production during the transition period to keep the two columns in sync."
+
+**When to use**: CDC (Change Data Capture) from Rails → Coursebuilder. Already planned in bead `5qr`.
+
+```sql
+-- Example from Ambler
+CREATE TRIGGER SynchronizeFirstName
+BEFORE INSERT OR UPDATE ON Customer
+FOR EACH ROW
+BEGIN
+  IF :NEW.FirstName != :OLD.FirstName THEN
+    :NEW.FName := :NEW.FirstName;
+  END IF;
+END;
+```
+
+### Parallel Run (Newman)
+
+> "When switching from functionality provided by an existing tried and tested application architecture to a fancy new microservice-based one, there may be some nervousness..."
+
+**The pattern**: Run both systems, compare outputs, alert on divergence.
+
+**When to use**: Phase 6 (Cutover). Shadow mode before DNS flip.
+
+```
+pdf-brain_search(query="parallel run shadow mode verification")
+```
+
+### Circuit Breaker (Nygard - Release It!)
+
+> "Circuit Breaker is the fundamental pattern for protecting your system from all manner of Integration Points problems."
+
+**States**: Closed (normal) → Open (failing, fast-fail) → Half-Open (testing recovery)
+
+**When to use**: Any integration point. Stripe webhooks, Customer.io, external APIs.
+
+```typescript
+// Inngest has this built-in via retries + backoff
+// But for direct calls, implement circuit breaker
+```
+
+```
+pdf-brain_search(query="circuit breaker integration point cascade failure")
+```
+
+### Timeouts + Cascading Failures (Nygard)
+
+> "Integration Points without Timeouts is a surefire way to create Cascading Failures."
+
+**Rule**: Every external call needs a timeout. Every. Single. One.
+
+**When to use**: Always. Especially Rails→CB sync, Stripe API, Mux API.
+
+```
+pdf-brain_search(query="timeout integration point cascade failure recovery")
+```
+
+### Bulkheads (Nygard)
+
+> "Partitioning servers, with Bulkheads, can prevent Chain Reactions from taking out the entire service."
+
+**When to use**: Isolate migration workloads from production traffic. Don't let a migration batch job starve the API.
+
+### Idempotency + Retry with Backoff (Kleppmann - DDIA)
+
+> "Use exponential backoff, and handle load-related errors differently from other errors."
+
+**Pattern**:
+
+```typescript
+const backoff = (attempt: number) =>
+  Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 30000);
+```
+
+**When to use**: All migration scripts. All webhook handlers. All async jobs.
+
+```
+pdf-brain_search(query="idempotent retry backoff exponential jitter")
+```
+
+### Four Golden Signals (Google SRE)
+
+> "The four golden signals of monitoring are latency, traffic, errors, and saturation."
+
+**During migration, monitor**:
+
+1. **Latency**: Migration script batch time
+2. **Traffic**: Records/second migrated
+3. **Errors**: Failed records, rollback triggers
+4. **Saturation**: DB connection pool, memory usage
+
+```
+pdf-brain_search(query="monitoring alerting SLI SLO golden signals")
+```
+
+### Feature Toggles / Dark Launching (Newman)
+
+> "You can use feature toggles in a more fine-grained manner, perhaps allowing a flag to be set for specific users."
+
+**When to use**: Phase 6. Route some users to CB while others stay on Rails.
+
+```
+pdf-brain_search(query="feature toggle dark launching canary release")
+```
+
+---
+
+## Pattern Triggers (For Agents)
+
+When you encounter these situations, **query pdf-brain for deeper guidance**:
+
+| Situation                   | Pattern to Query                            |
+| --------------------------- | ------------------------------------------- |
+| Adding new column/table     | `expand contract pattern database schema`   |
+| Keeping two systems in sync | `synchronization trigger transition period` |
+| External API integration    | `circuit breaker timeout cascade failure`   |
+| Batch job design            | `idempotent retry backoff exponential`      |
+| Cutover planning            | `parallel run shadow mode canary`           |
+| Schema evolution            | `schema evolution backward compatible`      |
+| Monitoring setup            | `golden signals SLI SLO alerting`           |
+| Failure handling            | `bulkhead circuit breaker fail fast`        |
+
+---
+
+## Database Refactoring Catalog (Ambler)
+
+Reference these when making schema changes. Each has a transition period pattern.
+
+### Structural Refactorings
+
+| Refactoring          | When to Use                   | Query                                   |
+| -------------------- | ----------------------------- | --------------------------------------- |
+| **Introduce Column** | Adding new field              | `introduce column transition period`    |
+| **Rename Column**    | Fixing naming                 | `rename column synchronization trigger` |
+| **Drop Column**      | Removing unused               | `drop column deprecation period`        |
+| **Move Column**      | Denormalization/normalization | `move column foreign key`               |
+| **Split Column**     | Breaking apart composite      | `split column synchronization`          |
+| **Merge Columns**    | Combining related             | `merge columns transition`              |
+| **Split Table**      | Breaking monolith table       | `split table foreign key`               |
+| **Merge Tables**     | Combining related             | `merge tables transition`               |
+| **Introduce Table**  | New entity                    | `introduce table`                       |
+| **Drop Table**       | Removing unused               | `drop table deprecation`                |
+
+### Data Quality Refactorings
+
+| Refactoring                       | When to Use             | Query                        |
+| --------------------------------- | ----------------------- | ---------------------------- |
+| **Introduce Surrogate Key**       | Adding synthetic PK     | `introduce surrogate key`    |
+| **Add Foreign Key**               | Enforcing relationships | `add foreign key constraint` |
+| **Introduce Soft Delete**         | Audit trail             | `introduce soft delete`      |
+| **Introduce Trigger For History** | Change tracking         | `trigger history audit`      |
+
+### Key Principle: Transition Period
+
+Every refactoring has three phases:
+
+1. **Start**: Add new structure, keep old
+2. **Transition**: Both exist, sync via triggers
+3. **End**: Remove old structure
+
+**Never skip the transition period.** External apps need time to migrate.
 
 ---
 

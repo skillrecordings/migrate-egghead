@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { createYoga } from "graphql-yoga";
+import { createSchema, createYoga } from "graphql-yoga";
 import { courses, lessons } from "./data.js";
 import { typeDefs } from "./schema.js";
 
@@ -27,13 +27,18 @@ const resolvers = {
 };
 
 /**
+ * Create GraphQL schema
+ */
+const schema = createSchema({
+  typeDefs,
+  resolvers,
+});
+
+/**
  * Create GraphQL Yoga server
  */
 const yoga = createYoga({
-  schema: {
-    typeDefs,
-    resolvers,
-  },
+  schema,
   logging: {
     debug: console.debug,
     info: console.info,
