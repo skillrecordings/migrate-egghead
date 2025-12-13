@@ -125,9 +125,29 @@ We're killing **two legacy systems** and consolidating onto Coursebuilder:
 
 ### Phase 1A: Content Migration (FIRST)
 
-**Epic**: `ntu`
+**Epic**: `ntu` | **POC**: ✅ Complete (j9b)
 
 Content has no user dependencies - migrate first to enable testing.
+
+#### POC Results (December 2025)
+
+Successfully migrated 2 courses to validate approach:
+
+- ✅ **Claude Code Essentials** (17 lessons) - Modern Sanity source
+- ✅ **Fix Common Git Mistakes** (19 lessons) - Legacy Rails source
+- ✅ UI routes working: `/courses/[slug]`, `/lessons/[slug]`
+- ✅ Video playback working via Mux
+
+**Key learnings applied:**
+
+- Support both `type='course'` AND `type='post' + postType='course'`
+- Use `.passthrough()` on Zod schemas for migration metadata
+- Remove `'use server'` from files exporting types/schemas
+- Always provide `createdById` (NOT NULL constraint)
+
+See: `reports/POC_LEARNINGS.md`
+
+#### Migration Tasks
 
 | Data              | Records | Bead    | Notes                              |
 | ----------------- | ------- | ------- | ---------------------------------- |
@@ -517,13 +537,26 @@ beads_sync()
 
 **Current Phase: 1A (Content Migration)**
 
+POC complete - 2 courses migrated and verified. Ready for full migration.
+
 ```bash
+# POC Complete:
+migrate-egghead-j9b   - POC epic (CLOSED)
+migrate-egghead-15y   - Infrastructure + validation (CLOSED)
+
 # Next ready tasks:
 migrate-egghead-ntu.1 - Create ID mapping tables in PlanetScale
 migrate-egghead-ntu.2 - Migrate tags (627 records)
 migrate-egghead-ntu.3 - Migrate courses (420 series)
 migrate-egghead-ntu.4 - Migrate lessons (5,132 records)
 ```
+
+**POC Artifacts:**
+
+- `investigation/poc-migrate-modern-course.ts` - Sanity→CB migration script
+- `investigation/poc-migrate-legacy-course.ts` - Rails→CB migration script
+- `investigation/src/lib/migration-utils.ts` - Shared utilities
+- `reports/POC_LEARNINGS.md` - Full synthesis of learnings
 
 ---
 

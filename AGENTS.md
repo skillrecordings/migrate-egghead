@@ -26,7 +26,26 @@ We're killing **egghead-rails** AND **egghead-next**, consolidating everything o
 
 ### Current Phase
 
-**Video migration complete.** Now executing Phase 0 (Migration Control Plane).
+**POC complete.** Content migration validated. Now executing Phase 1A (Full Content Migration).
+
+### POC Learnings (December 2025)
+
+Key discoveries from migrating 2 courses (Claude Code Essentials + Fix Common Git Mistakes):
+
+| Finding                | Impact               | Resolution                                                         |
+| ---------------------- | -------------------- | ------------------------------------------------------------------ |
+| Type mismatch          | Queries failed       | Support both `type='course'` AND `type='post' + postType='course'` |
+| `'use server'` exports | Schema exports broke | Remove `'use server'` from query files with type exports           |
+| Schema strictness      | Validation failed    | Add `.passthrough()` to allow migration metadata fields            |
+| `createdById` NOT NULL | Inserts failed       | Use system user ID for migrations                                  |
+| 97.5% Mux coverage     | 193 lessons missing  | Mark as retired or backfill                                        |
+
+**Files created during POC:**
+
+- `investigation/poc-migrate-modern-course.ts` - Sanity→CB migration
+- `investigation/poc-migrate-legacy-course.ts` - Rails→CB migration
+- `investigation/src/lib/migration-utils.ts` - Shared utilities
+- `reports/POC_LEARNINGS.md` - Full synthesis
 
 ---
 
@@ -277,6 +296,88 @@ import { runWithMysql } from "./src/lib/mysql.js";
 import sqlite3 from "sqlite3";
 const db = new sqlite3.Database("./egghead_videos.db");
 ```
+
+---
+
+## Testing Strategy (TDD for Migrations)
+
+### The Control Plane Concept
+
+A proper migration control plane has three layers:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MIGRATION CONTROL PLANE                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Layer 1: Unit Tests (fast, run always)                         │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ • Schema validation (Zod parsing)                          │ │
+│  │ • Field mapping functions                                  │ │
+│  │ • ID generation                                            │ │
+│  │ • Portable text → markdown conversion                      │ │
+│  │ Run: pnpm test (< 5 seconds)                               │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  Layer 2: Integration Tests (Docker, run before migration)      │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ • Rails PostgreSQL container (source)                      │ │
+│  │ • MySQL container (target, simulates PlanetScale)          │ │
+│  │ • SQLite (Mux video tracker)                               │ │
+│  │ • Full migration dry-run against containers                │ │
+│  │ Run: pnpm test:integration (< 2 minutes)                   │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  Layer 3: E2E Verification (post-migration)                     │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ • UI routes render (browser automation)                    │ │
+│  │ • Video playback works (Mux HLS)                           │ │
+│  │ • Course→lesson navigation                                 │ │
+│  │ • Count reconciliation (Rails vs CB)                       │ │
+│  │ Run: pnpm test:e2e (against dev server)                    │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Docker Compose for Integration Tests
+
+```yaml
+# docker-compose.test.yml (TO BE CREATED)
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: egghead_test
+    volumes:
+      - ./test-fixtures/rails-seed.sql:/docker-entrypoint-initdb.d/seed.sql
+
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: coursebuilder_test
+    volumes:
+      - ./test-fixtures/cb-schema.sql:/docker-entrypoint-initdb.d/schema.sql
+```
+
+### Test-First Migration Pattern
+
+Before migrating any entity type:
+
+1. **Write the test first** - Define expected output for known input
+2. **Run against containers** - Verify with isolated test data
+3. **Run against dev** - Verify with real data subset
+4. **Run against prod** - Full migration with rollback plan
+
+### Current Test Coverage
+
+| Layer             | Status    | Location                                            |
+| ----------------- | --------- | --------------------------------------------------- |
+| Unit tests        | ❌ TODO   | `investigation/src/__tests__/`                      |
+| Integration tests | ❌ TODO   | `investigation/docker-compose.test.yml`             |
+| E2E verification  | ✅ Manual | Browser automation via `next-devtools_browser_eval` |
+
+**Next bead to create**: `ntu.0` - Set up migration test infrastructure
 
 ---
 

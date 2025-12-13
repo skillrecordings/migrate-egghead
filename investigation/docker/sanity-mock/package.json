@@ -1,0 +1,17 @@
+{
+  "name": "sanity-mock-server",
+  "version": "1.0.0",
+  "description": "Mock GraphQL server for Sanity API responses",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "graphql": "^16.8.1",
+    "graphql-yoga": "^5.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

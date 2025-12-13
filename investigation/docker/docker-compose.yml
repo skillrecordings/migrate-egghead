@@ -1,0 +1,69 @@
+version: "3.8"
+
+services:
+  # Rails PostgreSQL (source database)
+  postgres:
+    image: postgres:14
+    container_name: egghead_test_postgres
+    environment:
+      POSTGRES_DB: egghead_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./postgres/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d egghead_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - egghead_test
+
+  # Coursebuilder MySQL (target database)
+  mysql:
+    image: mysql:8
+    container_name: egghead_test_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: coursebuilder_test
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./mysql/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - egghead_test
+
+  # Sanity GraphQL mock server
+  sanity-mock:
+    build:
+      context: ./sanity-mock
+      dockerfile: Dockerfile
+    container_name: egghead_test_sanity
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4000/graphql"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - egghead_test
+
+volumes:
+  postgres_data:
+  mysql_data:
+
+networks:
+  egghead_test:
+    driver: bridge
