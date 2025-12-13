@@ -122,9 +122,9 @@ describe.skipIf(!isDockerEnv)(
             WHERE p.visibility_state = 'indexed'
               AND EXISTS (
                 SELECT 1 FROM tracklists t
-                JOIN lessons l ON l.id = t.trackable_id
-                WHERE t.list_id = p.id
-                  AND t.trackable_type = 'Lesson'
+                JOIN lessons l ON l.id = t.tracklistable_id
+                WHERE t.playlist_id = p.id
+                  AND t.tracklistable_type = 'Lesson'
                   AND l.state = 'published'
               )
           `;
@@ -305,9 +305,9 @@ describe.skipIf(!isDockerEnv)(
             WHERE p.visibility_state = 'indexed'
               AND EXISTS (
                 SELECT 1 FROM tracklists t
-                JOIN lessons l ON l.id = t.trackable_id
-                WHERE t.list_id = p.id
-                  AND t.trackable_type = 'Lesson'
+                JOIN lessons l ON l.id = t.tracklistable_id
+                WHERE t.playlist_id = p.id
+                  AND t.tracklistable_type = 'Lesson'
                   AND l.state = 'published'
               )
           `;

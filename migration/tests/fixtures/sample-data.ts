@@ -173,9 +173,9 @@ export async function reconcileCounts(
           WHERE p.visibility_state = 'indexed'
             AND EXISTS (
               SELECT 1 FROM tracklists t
-              JOIN lessons l ON l.id = t.trackable_id
-              WHERE t.list_id = p.id
-                AND t.trackable_type = 'Lesson'
+              JOIN lessons l ON l.id = t.tracklistable_id
+              WHERE t.playlist_id = p.id
+                AND t.tracklistable_type = 'Lesson'
                 AND l.state = 'published'
             )
         `;
@@ -203,9 +203,9 @@ export async function reconcileCounts(
         const railsResult = await railsDb`
           SELECT COUNT(DISTINCT l.id)::int as count
           FROM lessons l
-          JOIN tracklists t ON t.trackable_id = l.id
-          JOIN playlists p ON p.id = t.list_id
-          WHERE t.trackable_type = 'Lesson'
+          JOIN tracklists t ON t.tracklistable_id = l.id
+          JOIN playlists p ON p.id = t.playlist_id
+          WHERE t.tracklistable_type = 'Lesson'
             AND p.visibility_state = 'indexed'
             AND l.state = 'published'
         `;
