@@ -357,4 +357,135 @@ migrate-egghead-axl.6 → depends_on migrate-egghead-04y
 
 ---
 
+## Part 8: Beads Restructure Plan (Added Dec 12, 2025)
+
+### Problem: Epic Sprawl & Cryptic IDs
+
+The current 26 epics have significant overlap and cryptic hash IDs:
+
+```
+Video Migration:
+  - 30z, brp, ddl → 3 epics for same work
+
+Phase 0:
+  - 6pv, 341 → 2 epics for same phase
+
+Phase 1:
+  - koh, 39p → 2 epics for same phase
+
+Phase 4:
+  - qk0, ifz, 1p8 → 3 epics for same phase
+
+Phase 6:
+  - axl, 04y → 2 epics for same phase
+```
+
+**Nobody can remember what `koh` means without looking it up.**
+
+### Solution: Human-Readable Phase-Aligned IDs
+
+New structure with custom IDs matching README phases:
+
+```
+migrate-egghead-phase-0          # Minimum Viable Safety
+├── phase-0.e2e-test             # ONE E2E test working
+├── phase-0.inngest-dev          # Inngest dev server running
+├── phase-0.idempotency          # stripe_event_id columns added
+└── phase-0.gate                 # [HUMAN] Approve control plane
+
+migrate-egghead-phase-1          # Data Migration
+├── phase-1.users                # 699K users migration
+├── phase-1.orgs                 # 94K organizations migration
+├── phase-1.subscriptions        # 3,335 subscriptions migration
+├── phase-1.progress             # 3M progress records migration
+├── phase-1.content              # Courses, lessons, tags migration
+├── phase-1.gifts                # Gift subscriptions migration
+├── phase-1.teams                # 266 teams migration
+├── phase-1.validation           # Reconciliation queries
+└── phase-1.gate                 # [HUMAN] Approve migration
+
+migrate-egghead-phase-2          # Webhook Handlers
+├── phase-2.sub-created          # subscription.created handler
+├── phase-2.sub-updated          # subscription.updated handler
+├── phase-2.sub-deleted          # subscription.deleted handler
+├── phase-2.invoice-paid         # invoice.payment_succeeded handler
+├── phase-2.unit-tests           # Handler unit tests
+├── phase-2.e2e-checkout         # E2E checkout flow
+├── phase-2.e2e-cancel           # E2E cancel flow
+└── phase-2.gate                 # [HUMAN] Approve handlers
+
+migrate-egghead-phase-3          # Cron Jobs
+├── phase-3.stripe-reconciler    # Daily Stripe reconciliation
+├── phase-3.gift-expiration      # Daily gift expiration
+├── phase-3.sitemap-refresh      # 4-hour sitemap refresh
+├── phase-3.token-cleaner        # 1-minute magic link cleanup
+├── phase-3.lesson-publish       # 10-minute scheduled publish
+├── phase-3.renewal-reminder     # Daily renewal reminders
+└── phase-3.revenue-share        # Monthly instructor payments
+
+migrate-egghead-phase-4          # External Integrations
+├── phase-4.customerio-client    # Customer.io API client
+├── phase-4.customerio-events    # Subscription event tracking
+├── phase-4.magic-link-email     # Magic link via Resend
+├── phase-4.renewal-email        # Renewal/welcome emails
+├── phase-4.transactional        # 17 mailers to Resend
+├── phase-4.e2e-email            # E2E email flow test
+└── phase-4.gate                 # [HUMAN] Approve email strategy
+
+migrate-egghead-phase-5          # UI Components
+├── phase-5.video-player         # Mux player component
+├── phase-5.lesson-view          # Lesson page with player
+├── phase-5.course-view          # Course page with progress
+├── phase-5.search-ui            # Typesense + InstantSearch
+├── phase-5.pricing-page         # Stripe checkout integration
+├── phase-5.subscription-mgmt    # Subscription management
+├── phase-5.redirects            # URL redirect map
+├── phase-5.e2e-matrix           # Full click-test matrix
+└── phase-5.gate                 # [HUMAN] Approve UI
+
+migrate-egghead-phase-6          # Cutover
+├── phase-6.dual-write           # Deploy dual-write config
+├── phase-6.shadow-compare       # Shadow traffic comparison
+├── phase-6.shadow-e2e           # E2E against shadow mode
+├── phase-6.shadow-gate          # [HUMAN] Shadow mode review (7+ days)
+├── phase-6.flip-primary         # Execute flip to CB primary
+├── phase-6.auth-cutover         # Auth + password reset campaign
+├── phase-6.auth-gate            # [HUMAN] Auth cutover approval
+├── phase-6.post-flip-e2e        # Post-flip regression suite
+├── phase-6.dns-gate             # [HUMAN] DNS cutover authorization
+├── phase-6.dns-cutover          # Execute DNS cutover
+└── phase-6.kill-gate            # [HUMAN] Kill Rails authorization
+```
+
+### Old ID → New ID Mapping
+
+| Old ID   | New ID                | Notes                 |
+| -------- | --------------------- | --------------------- |
+| `6pv`    | `phase-0`             | Control plane         |
+| `6pv.17` | `phase-0.gate`        | Human gate            |
+| `koh`    | `phase-1`             | Data migration        |
+| `koh.17` | `phase-1.gate`        | Human gate            |
+| `5bk`    | `phase-2`             | Webhooks              |
+| `15v`    | `phase-2.gate`        | Human gate            |
+| `tkd`    | `phase-3`             | Cron jobs             |
+| `qk0`    | `phase-4`             | External integrations |
+| `esr`    | `phase-4.gate`        | Human gate            |
+| `r52`    | `phase-5`             | UI components         |
+| `sr4`    | `phase-5.gate`        | Human gate            |
+| `axl`    | `phase-6`             | Cutover               |
+| `axl.4`  | `phase-6.shadow-gate` | Shadow review         |
+| `dwa`    | `phase-6.auth-gate`   | Auth approval         |
+| `axl.8`  | `phase-6.dns-gate`    | DNS approval          |
+| `axl.10` | `phase-6.kill-gate`   | Kill Rails            |
+
+### Migration Steps
+
+1. **Archive complete** - See `reports/BEADS_ARCHIVE.md` (263 beads, 739 lines)
+2. **Close completed work** - brp.\*, 6pv.1-8, koh.1-8
+3. **Create new phase-aligned structure** - Using `beads_create_epic` with custom IDs
+4. **Update README** - Replace old bead references with new IDs
+
+---
+
 _Generated by swarm analysis on Dec 12, 2025. Coordinator: PinkCastle. Subagents: 5 parallel explorers._
+_Restructure plan added Dec 12, 2025._

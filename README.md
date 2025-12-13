@@ -102,13 +102,15 @@ We're killing **two legacy systems** and consolidating onto Coursebuilder:
 
 ### Phase 0: Minimum Viable Safety
 
+**Epic**: `phase-0`
+
 **Goal**: Prove the happy path works, then build safety as we go.
 
-| Task                       | Purpose                                            |
-| -------------------------- | -------------------------------------------------- |
-| ONE E2E test working       | User signs up → gets entitlement → can watch video |
-| Inngest dev server running | Can test webhook handlers locally                  |
-| Idempotency column added   | `stripe_event_id` on relevant tables               |
+| Task                       | Bead        | Purpose                                            |
+| -------------------------- | ----------- | -------------------------------------------------- |
+| ONE E2E test working       | `phase-0.1` | User signs up → gets entitlement → can watch video |
+| Inngest dev server running | `phase-0.2` | Can test webhook handlers locally                  |
+| Idempotency column added   | `phase-0.3` | `stripe_event_id` on relevant tables               |
 
 **Not in Phase 0** (build when needed):
 
@@ -117,102 +119,103 @@ We're killing **two legacy systems** and consolidating onto Coursebuilder:
 - Reconciliation jobs - add post-cutover if drift detected
 - Webhook deduplication - shadow mode is read-only, no dual-write
 
-**Human Gate**: `6pv.17` - Approve migration control plane
+**Human Gate**: `phase-0.4` - Approve migration control plane
 
 ---
 
 ### Phase 1: Data Migration
 
-**Epic**: `koh` + `39p.2-5`
+**Epic**: `phase-1`
 
 Migrate all data from Rails PostgreSQL to Coursebuilder PlanetScale:
 
-| Data                       | Records      | Bead     | Status       |
-| -------------------------- | ------------ | -------- | ------------ |
-| Users                      | 699,318      | `koh.11` | Ready        |
-| Organizations (accounts)   | 94,679       | `koh.12` | Ready        |
-| Subscriptions              | 3,335 active | `koh.13` | Ready        |
-| Progress                   | 2,957,917    | `koh.14` | Ready        |
-| Content (courses, lessons) | 420 + 5,132  | `koh.15` | 97.5% on Mux |
-| Gifts                      | ~500         | `51p`    | Ready        |
-| Teams                      | 266          | `dxh.6`  | Ready        |
+| Data                       | Records      | Bead        | Status       |
+| -------------------------- | ------------ | ----------- | ------------ |
+| Users                      | 699,318      | `phase-1.1` | Ready        |
+| Organizations (accounts)   | 94,679       | `phase-1.2` | Ready        |
+| Subscriptions              | 3,335 active | `phase-1.3` | Ready        |
+| Progress                   | 2,957,917    | `phase-1.4` | Ready        |
+| Content (courses, lessons) | 420 + 5,132  | `phase-1.5` | 97.5% on Mux |
+| Gifts                      | ~500         | `phase-1.6` | Ready        |
+| Teams                      | 266          | `phase-1.7` | Ready        |
 
-**Monitoring**: `c7z` - Progress backfill dashboard with stall detection
+**Validation**: `phase-1.8` - Reconciliation queries
 
-**Human Gate**: `koh.17` - Approve migration before execution
+**Human Gate**: `phase-1.9` - Approve migration before execution
 
 ---
 
 ### Phase 2: Webhook Handlers
 
-**Epic**: `5bk`
+**Epic**: `phase-2`
 
 Replace Rails Sidekiq handlers with Coursebuilder Inngest:
 
-| Event                           | Rails Delay | Bead    | Status      |
-| ------------------------------- | ----------- | ------- | ----------- |
-| `checkout.session.completed`    | None        | ✅      | Working     |
-| `customer.subscription.created` | None        | `5bk.1` | **STUB**    |
-| `customer.subscription.updated` | 5 sec       | `5bk.2` | **STUB**    |
-| `customer.subscription.deleted` | None        | `5bk.3` | **MISSING** |
-| `invoice.payment_succeeded`     | 1 min       | `5bk.4` | **STUB**    |
+| Event                           | Rails Delay | Bead        | Status      |
+| ------------------------------- | ----------- | ----------- | ----------- |
+| `checkout.session.completed`    | None        | ✅          | Working     |
+| `customer.subscription.created` | None        | `phase-2.1` | **STUB**    |
+| `customer.subscription.updated` | 5 sec       | `phase-2.2` | **STUB**    |
+| `customer.subscription.deleted` | None        | `phase-2.3` | **MISSING** |
+| `invoice.payment_succeeded`     | 1 min       | `phase-2.4` | **STUB**    |
 
 **Why the delays?**
 
 - 5-sec on `subscription.updated`: Race condition with `checkout.session.completed`
 - 1-min on `invoice.payment_succeeded`: Wait for Stripe to finalize charge
 
-**Human Gate**: `15v` - Approve webhook handler design
+**Human Gate**: `phase-2.8` - Approve webhook handler design
 
 ---
 
 ### Phase 3: Cron Jobs
 
-**Epic**: `tkd`
+**Epic**: `phase-3`
 
-Port 17 Sidekiq-Cron jobs to Inngest:
+Port essential Sidekiq-Cron jobs to Inngest:
 
-| Job                       | Frequency  | Bead     | Impact if Missing       |
-| ------------------------- | ---------- | -------- | ----------------------- |
-| StripeReconciler          | Daily      | `tkd.1`  | Missed transactions     |
-| GiftExpirationWorker      | Daily      | `tkd.2`  | Gifts never expire      |
-| RefreshSitemap            | 4 hours    | `tkd.3`  | SEO degrades            |
-| SignInTokenCleaner        | 1 minute   | `tkd.4`  | Magic links pile up     |
-| LessonPublishWorker       | 10 minutes | `tkd.5`  | Scheduled content stuck |
-| RenewalReminder           | Daily      | `tkd.6`  | No renewal emails       |
-| Revenue share calculation | Monthly    | `tkd.11` | Instructors not paid    |
+| Job                       | Frequency  | Bead        | Impact if Missing       |
+| ------------------------- | ---------- | ----------- | ----------------------- |
+| StripeReconciler          | Daily      | `phase-3.1` | Missed transactions     |
+| GiftExpirationWorker      | Daily      | `phase-3.2` | Gifts never expire      |
+| RefreshSitemap            | 4 hours    | `phase-3.3` | SEO degrades            |
+| SignInTokenCleaner        | 1 minute   | `phase-3.4` | Magic links pile up     |
+| LessonPublishWorker       | 10 minutes | `phase-3.5` | Scheduled content stuck |
+| RenewalReminder           | Daily      | `phase-3.6` | No renewal emails       |
+| Revenue share calculation | Monthly    | `phase-3.7` | Instructors not paid    |
 
 ---
 
 ### Phase 4: External Integrations
 
-**Epic**: `qk0` + `ifz`
+**Epic**: `phase-4`
 
-| Integration              | Beads                   | Notes                                    |
-| ------------------------ | ----------------------- | ---------------------------------------- |
-| Customer.io              | `ifz`, `qk0.1-2`, `1p8` | Track subscribed/cancelled/billed events |
-| Magic link email         | `qk0.3`                 | **PRIMARY auth method**                  |
-| Renewal/Welcome emails   | `qk0.4`                 | Revenue-affecting                        |
-| 17 transactional mailers | `qk0.5`                 | Port to Resend                           |
+| Integration              | Bead        | Notes                                    |
+| ------------------------ | ----------- | ---------------------------------------- |
+| Customer.io API client   | `phase-4.1` | Track subscribed/cancelled/billed events |
+| Customer.io events       | `phase-4.2` | Subscription event tracking              |
+| Magic link email         | `phase-4.3` | **PRIMARY auth method**                  |
+| Renewal/Welcome emails   | `phase-4.4` | Revenue-affecting                        |
+| 17 transactional mailers | `phase-4.5` | Port to Resend                           |
 
-**Human Gate**: `esr` - Approve Customer.io + email strategy
+**Human Gate**: `phase-4.7` - Approve Customer.io + email strategy
 
 ---
 
 ### Phase 5: UI Components
 
-**Epic**: `r52`
+**Epic**: `phase-5`
 
-| Component     | Bead              | Notes                                      |
-| ------------- | ----------------- | ------------------------------------------ |
-| Video player  | `r52.1`, `r52.11` | Mux player, NOT xstate complexity          |
-| Lesson view   | `r52.2`           | Player + transcript + navigation           |
-| Course view   | `r52.3`           | Lesson list + progress indicators          |
-| Search UI     | `r52.4`           | Typesense + InstantSearch, `/q/[[...all]]` |
-| Pricing page  | `r52.5`           | Stripe checkout integration                |
-| URL redirects | `r52.7`           | **SEO critical**                           |
+| Component     | Bead        | Notes                                      |
+| ------------- | ----------- | ------------------------------------------ |
+| Video player  | `phase-5.1` | Mux player, NOT xstate complexity          |
+| Lesson view   | `phase-5.2` | Player + transcript + navigation           |
+| Course view   | `phase-5.3` | Lesson list + progress indicators          |
+| Search UI     | `phase-5.4` | Typesense + InstantSearch, `/q/[[...all]]` |
+| Pricing page  | `phase-5.5` | Stripe checkout integration                |
+| URL redirects | `phase-5.7` | **SEO critical**                           |
 
-**Human Gate**: `sr4` - Approve UI architecture
+**Human Gate**: `phase-5.9` - Approve UI architecture
 
 ---
 
@@ -270,10 +273,10 @@ Port 17 Sidekiq-Cron jobs to Inngest:
 
 **Human Gates**:
 
-- `axl.4` - Shadow mode review (7+ days stable)
-- `dwa` - Auth cutover plan approval
-- `axl.8` - DNS cutover authorization
-- `axl.10` - Kill Rails authorization
+- `phase-6.4` - Shadow mode review (7+ days stable)
+- `phase-6.7` - Auth cutover plan approval
+- `phase-6.9` - DNS cutover authorization
+- `phase-6.11` - Kill Rails authorization
 
 ---
 
@@ -472,10 +475,10 @@ pnpm tsx src/queries/table-activity.ts
 beads_ready()
 
 # Start a task
-beads_start(id="migrate-egghead-39p.2")
+beads_start(id="migrate-egghead-phase-0.1")
 
 # Close when done
-beads_close(id="migrate-egghead-39p.2", reason="Completed user migration")
+beads_close(id="migrate-egghead-phase-0.1", reason="E2E test passing")
 
 # Sync to git
 beads_sync()
@@ -488,12 +491,15 @@ beads_sync()
 - ✅ Video migration - 81.7% Rails coverage (8,233/10,082 lessons with Mux URLs)
 - ✅ Gap video upload - 131/146 on Mux
 - ✅ SQLite playback IDs - 6,895 videos tracked
+- ✅ Beads restructure - Human-readable phase-aligned IDs
 
-**Next:**
+**Current Phase: 0 (Minimum Viable Safety)**
 
 ```bash
-# Next ready task:
-migrate-egghead-39p.2 - User/Account migration pipeline (699K users)
+# Next ready tasks:
+migrate-egghead-phase-0.1 - ONE E2E test working
+migrate-egghead-phase-0.2 - Inngest dev server running
+migrate-egghead-phase-0.3 - Add stripe_event_id columns
 ```
 
 ---
@@ -502,17 +508,17 @@ migrate-egghead-39p.2 - User/Account migration pipeline (699K users)
 
 These beads require explicit human approval before proceeding:
 
-| Gate     | Phase | What Needs Review            |
-| -------- | ----- | ---------------------------- |
-| `6pv.17` | 0     | Migration control plane      |
-| `koh.17` | 1     | Data migration plan          |
-| `15v`    | 2     | Webhook handler design       |
-| `esr`    | 4     | Customer.io + email strategy |
-| `sr4`    | 5     | UI architecture              |
-| `axl.4`  | 6     | Shadow mode results          |
-| `dwa`    | 6     | Auth cutover plan            |
-| `axl.8`  | 6     | DNS cutover                  |
-| `axl.10` | 6     | Kill Rails authorization     |
+| Gate         | Phase | What Needs Review            |
+| ------------ | ----- | ---------------------------- |
+| `phase-0.4`  | 0     | Migration control plane      |
+| `phase-1.9`  | 1     | Data migration plan          |
+| `phase-2.8`  | 2     | Webhook handler design       |
+| `phase-4.7`  | 4     | Customer.io + email strategy |
+| `phase-5.9`  | 5     | UI architecture              |
+| `phase-6.4`  | 6     | Shadow mode results          |
+| `phase-6.7`  | 6     | Auth cutover plan            |
+| `phase-6.9`  | 6     | DNS cutover                  |
+| `phase-6.11` | 6     | Kill Rails authorization     |
 
 ---
 

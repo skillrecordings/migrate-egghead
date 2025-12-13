@@ -37,32 +37,32 @@ We're killing **egghead-rails** AND **egghead-next**, consolidating everything o
 ### Phase Execution Order (from README)
 
 ```
-Phase 0: Minimum Viable Safety     ← CURRENT (epic: 6pv)
+Phase 0: Minimum Viable Safety     ← CURRENT (epic: phase-0)
   └─ E2E test, Inngest dev server, idempotency columns
-  └─ Human Gate: 6pv.17
+  └─ Human Gate: phase-0.4
 
-Phase 1: Data Migration            (epic: koh)
+Phase 1: Data Migration            (epic: phase-1)
   └─ Users, Orgs, Subscriptions, Progress, Content
-  └─ Human Gate: koh.17
+  └─ Human Gate: phase-1.9
 
-Phase 2: Webhook Handlers          (epic: 5bk)
+Phase 2: Webhook Handlers          (epic: phase-2)
   └─ Stripe webhooks → Inngest
-  └─ Human Gate: 15v
+  └─ Human Gate: phase-2.8
 
-Phase 3: Cron Jobs                 (epic: tkd)
+Phase 3: Cron Jobs                 (epic: phase-3)
   └─ Sidekiq → Inngest
 
-Phase 4: External Integrations     (epic: qk0)
+Phase 4: External Integrations     (epic: phase-4)
   └─ Customer.io, emails
-  └─ Human Gate: esr
+  └─ Human Gate: phase-4.7
 
-Phase 5: UI Components             (epic: r52)
+Phase 5: UI Components             (epic: phase-5)
   └─ Video player, search, pricing
-  └─ Human Gate: sr4
+  └─ Human Gate: phase-5.9
 
-Phase 6: Cutover                   (epic: axl)
+Phase 6: Cutover                   (epic: phase-6)
   └─ Shadow mode, DNS flip, kill Rails
-  └─ Human Gates: axl.4, dwa, axl.8, axl.10
+  └─ Human Gates: phase-6.4, phase-6.7, phase-6.9, phase-6.11
 ```
 
 **DO NOT skip phases.** Each phase has dependencies and human gates.
@@ -167,23 +167,29 @@ From the README - follow these:
 
 ## Beads Workflow
 
-The migration epic is `migrate-egghead-39p` with 10 subtasks already defined.
+The migration uses **human-readable phase-aligned IDs**: `phase-0`, `phase-1`, etc.
 
 ```bash
 # See what's ready to work on
 beads_ready()
 
 # Start working on a task
-beads_start(id="migrate-egghead-39p.2")
+beads_start(id="migrate-egghead-phase-0.1")
 
 # When done
-beads_close(id="migrate-egghead-39p.2", reason="Completed user migration pipeline")
+beads_close(id="migrate-egghead-phase-0.1", reason="E2E test passing")
 
 # Sync changes
 beads_sync()
 ```
 
-**DO NOT** create new beads. Work within the existing structure.
+**Bead ID Format**: `migrate-egghead-phase-{N}.{subtask-number}`
+
+Examples:
+
+- `migrate-egghead-phase-0` - Phase 0 epic
+- `migrate-egghead-phase-0.1` - First subtask of Phase 0
+- `migrate-egghead-phase-1.9` - Human gate for Phase 1
 
 ---
 
