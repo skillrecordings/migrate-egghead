@@ -11,9 +11,9 @@
  *   bun scripts/create-mapping-tables.ts --dry-run    # Show SQL without executing
  *
  * Tables created:
- *   _migration_tag_map        - Rails tag.id → CB ContentResource.id
- *   _migration_course_map     - Rails playlist.id → CB ContentResource.id
- *   _migration_lesson_map     - Rails lesson.id → CB ContentResource.id
+ *   egghead_migration_tag_map        - Rails tag.id → CB ContentResource.id
+ *   egghead_migration_course_map     - Rails playlist.id → CB ContentResource.id
+ *   egghead_migration_lesson_map     - Rails lesson.id → CB ContentResource.id
  *   _migration_instructor_map - Rails user.id (instructor) → CB User.id
  */
 
@@ -53,7 +53,7 @@ function getProdConfig() {
 // SQL statements for creating mapping tables
 const CREATE_TABLES_SQL = `
 -- Tag mapping: Rails tags → CB ContentResource (type='tag')
-CREATE TABLE IF NOT EXISTS _migration_tag_map (
+CREATE TABLE IF NOT EXISTS egghead_migration_tag_map (
   rails_id INT PRIMARY KEY COMMENT 'Rails tags.id',
   cb_id VARCHAR(255) NOT NULL COMMENT 'CB ContentResource.id (cuid)',
   rails_name VARCHAR(255) COMMENT 'Rails tags.name for debugging',
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS _migration_tag_map (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Course mapping: Rails playlists → CB ContentResource (type='course')
-CREATE TABLE IF NOT EXISTS _migration_course_map (
+CREATE TABLE IF NOT EXISTS egghead_migration_course_map (
   rails_id INT PRIMARY KEY COMMENT 'Rails playlists.id',
   cb_id VARCHAR(255) NOT NULL COMMENT 'CB ContentResource.id (cuid)',
   rails_slug VARCHAR(255) COMMENT 'Rails playlists.slug for URL redirects',
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS _migration_course_map (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Lesson mapping: Rails lessons → CB ContentResource (type='lesson')
-CREATE TABLE IF NOT EXISTS _migration_lesson_map (
+CREATE TABLE IF NOT EXISTS egghead_migration_lesson_map (
   rails_id INT PRIMARY KEY COMMENT 'Rails lessons.id',
   cb_id VARCHAR(255) NOT NULL COMMENT 'CB ContentResource.id (cuid)',
   video_resource_id VARCHAR(255) COMMENT 'CB videoResource.id for Mux playback',

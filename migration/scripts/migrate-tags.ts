@@ -6,7 +6,7 @@
  * 1. Query all tags from Rails (627 records)
  * 2. Map to Coursebuilder schema
  * 3. Insert into MySQL Tag table with idempotency
- * 4. Create _migration_tag_map entries for legacy lookups
+ * 4. Save ID mappings to local SQLite (migration-state.db)
  *
  * Idempotency:
  * - Tags are identified by fields.legacyId in the JSON
@@ -23,6 +23,11 @@ import { closeAll, getMysqlDb, railsDb } from "../src/lib/db";
 import { createTagMapping, mapTag, type RailsTag } from "../src/lib/tag-mapper";
 import { MigrationStreamWriter } from "../src/lib/migration-stream";
 import { createEvent } from "../src/lib/event-types";
+import {
+  saveTagMapping,
+  getMigrationStats,
+  closeMigrationDb,
+} from "../src/lib/migration-state";
 
 const args = process.argv.slice(2);
 const DRY_RUN = !args.includes("--execute");
@@ -138,37 +143,39 @@ async function main() {
     return;
   }
 
-  // Step 4: Create Tag table if not exists
-  console.log("📋 Step 4: Ensure Tag table exists...");
-  await mysqlDb.execute(`
-    CREATE TABLE IF NOT EXISTS Tag (
-      id VARCHAR(255) PRIMARY KEY,
-      type VARCHAR(255) NOT NULL,
-      organizationId VARCHAR(191),
-      fields JSON,
-      createdAt TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
-      updatedAt TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
-      deletedAt TIMESTAMP(3),
-      INDEX type_idx (type),
-      INDEX organizationId_idx (organizationId)
-    )
-  `);
-  console.log("   ✅ Table ready\n");
+  // Step 4: Check Tag table exists (skip DDL for PlanetScale - it blocks CREATE TABLE)
+  console.log("📋 Step 4: Checking Tag table...");
+  const USE_DOCKER = process.env.USE_DOCKER === "1";
+  if (USE_DOCKER) {
+    await mysqlDb.execute(`
+      CREATE TABLE IF NOT EXISTS egghead_Tag (
+        id VARCHAR(255) PRIMARY KEY,
+        type VARCHAR(255) NOT NULL,
+        organizationId VARCHAR(191),
+        fields JSON,
+        createdAt TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
+        updatedAt TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
+        deletedAt TIMESTAMP(3),
+        INDEX type_idx (type),
+        INDEX organizationId_idx (organizationId)
+      )
+    `);
+    console.log("   ✅ Table created/verified\n");
+  } else {
+    // PlanetScale - just verify table exists
+    try {
+      await mysqlDb.execute("SELECT 1 FROM egghead_Tag LIMIT 1");
+      console.log("   ✅ Table exists\n");
+    } catch (e) {
+      console.error(
+        "   ❌ Tag table doesn't exist in PlanetScale. Run migrations first.",
+      );
+      throw e;
+    }
+  }
 
-  // Step 5: Create migration_tag_map table if not exists
-  console.log("📋 Step 5: Ensure _migration_tag_map table exists...");
-  await mysqlDb.execute(`
-    CREATE TABLE IF NOT EXISTS _migration_tag_map (
-      legacy_id INT PRIMARY KEY,
-      new_id VARCHAR(255) NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_new_id (new_id)
-    )
-  `);
-  console.log("   ✅ Table ready\n");
-
-  // Step 6: Insert tags
-  console.log("📋 Step 6: Insert tags into Coursebuilder MySQL...");
+  // Step 5: Insert tags
+  console.log("📋 Step 5: Insert tags into Coursebuilder MySQL...");
   let inserted = 0;
   let updated = 0;
   let errors = 0;
@@ -182,7 +189,7 @@ async function main() {
     try {
       // Check if tag already exists (by legacy ID in fields)
       const [existingRows] = await mysqlDb.execute(
-        "SELECT id FROM Tag WHERE JSON_EXTRACT(fields, '$.legacyId') = ?",
+        "SELECT id FROM egghead_Tag WHERE JSON_EXTRACT(fields, '$.legacyId') = ?",
         [tag.fields.legacyId],
       );
 
@@ -226,7 +233,7 @@ async function main() {
       } else {
         // Insert new tag
         await mysqlDb.execute(
-          `INSERT INTO Tag (id, type, organizationId, fields, createdAt, updatedAt, deletedAt)
+          `INSERT INTO egghead_Tag (id, type, organizationId, fields, createdAt, updatedAt, deletedAt)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             tag.id,
@@ -298,48 +305,41 @@ async function main() {
   console.log(`   Inserted: ${inserted} new tags`);
   console.log(`   Updated: ${updated} existing tags\n`);
 
-  // Step 7: Insert tag mappings
-  console.log("📋 Step 7: Insert tag ID mappings...");
+  // Step 6: Save tag mappings to local SQLite
+  console.log("📋 Step 6: Save tag ID mappings to local SQLite...");
   let mappingsInserted = 0;
 
   for (const mapping of tagMappings) {
     const railsTag = railsTags.find((t) => t.id === mapping.legacyId);
-    // Use INSERT ... ON DUPLICATE KEY UPDATE for idempotency
-    // Column names: rails_id, cb_id, rails_name, rails_slug (from create-mapping-tables.ts)
-    await mysqlDb.execute(
-      `INSERT INTO _migration_tag_map (rails_id, cb_id, rails_name, rails_slug)
-      VALUES (?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE cb_id = VALUES(cb_id), rails_name = VALUES(rails_name), rails_slug = VALUES(rails_slug)`,
-      [mapping.legacyId, mapping.newId, railsTag?.name, railsTag?.slug],
+    saveTagMapping(
+      mapping.legacyId,
+      mapping.newId,
+      railsTag?.slug,
+      railsTag?.name,
     );
     mappingsInserted++;
   }
 
   console.log(`   Mappings: ${mappingsInserted} entries\n`);
 
-  // Step 8: Verify
-  console.log("📋 Step 8: Verify migration...");
+  // Step 7: Verify
+  console.log("📋 Step 7: Verify migration...");
   const [tagCountResult] = await mysqlDb.execute(
-    "SELECT COUNT(*) as count FROM Tag",
+    "SELECT COUNT(*) as count FROM egghead_Tag",
   );
-  const [mapCountResult] = await mysqlDb.execute(
-    "SELECT COUNT(*) as count FROM _migration_tag_map",
-  );
+  const migrationStats = getMigrationStats();
 
   const tagCount = Array.isArray(tagCountResult) ? tagCountResult[0] : null;
-  const mapCount = Array.isArray(mapCountResult) ? mapCountResult[0] : null;
 
   if (tagCount && "count" in tagCount) {
     console.log(`   Tags in Coursebuilder: ${tagCount.count}`);
   }
-  if (mapCount && "count" in mapCount) {
-    console.log(`   Mappings in map table: ${mapCount.count}`);
-  }
+  console.log(`   Mappings in SQLite: ${migrationStats.tags}`);
 
   // Sample check - verify legacy IDs are preserved
   const [sampleRows] = await mysqlDb.execute(
     `SELECT id, type, fields
-    FROM Tag
+    FROM egghead_Tag
     WHERE JSON_EXTRACT(fields, '$.legacyId') IS NOT NULL
     LIMIT 3`,
   );
@@ -374,6 +374,7 @@ async function main() {
   }
 
   await closeAll();
+  closeMigrationDb();
 
   console.log("\n✨ Tag migration complete!");
 }

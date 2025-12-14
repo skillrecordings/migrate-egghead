@@ -92,7 +92,7 @@ export function mapTag(
 }
 
 /**
- * Create tag ID mapping for _migration_tag_map table
+ * Create tag ID mapping for egghead_migration_tag_map table
  */
 export function createTagMapping(
   railsTag: RailsTag,

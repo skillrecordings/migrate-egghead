@@ -237,73 +237,6 @@ ALTER SEQUENCE public.playlists_id_seq OWNED BY public.playlists.id;
 
 
 --
--- Name: series; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.series (
-    id integer NOT NULL,
-    title character varying(255),
-    description text,
-    instructor_id integer,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone,
-    slug character varying(255),
-    is_complete boolean DEFAULT false,
-    tweeted_on timestamp without time zone,
-    purchase_price numeric,
-    state character varying(255),
-    square_cover_file_name character varying(255),
-    square_cover_content_type character varying(255),
-    square_cover_file_size integer,
-    square_cover_updated_at timestamp without time zone,
-    row_order integer,
-    published_at timestamp without time zone,
-    queue_order integer,
-    cached_tag_list character varying,
-    cached_library_list character varying,
-    cached_language_list character varying,
-    cached_framework_list character varying,
-    cached_tool_list character varying,
-    cached_platform_list character varying,
-    cached_skillset_list character varying,
-    cached_skill_level_list character varying,
-    free_forever boolean DEFAULT false,
-    tagline text,
-    summary text,
-    kvstore jsonb DEFAULT '{}'::jsonb,
-    square_cover_processing boolean,
-    publish_subject character varying,
-    publish_body text,
-    repo character varying,
-    publish_at timestamp without time zone,
-    price double precision,
-    revshare_percent double precision,
-    site character varying DEFAULT 'egghead.io'::character varying,
-    visibility_state character varying DEFAULT 'hidden'::character varying,
-    resources_id bigint
-);
-
-
---
--- Name: series_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.series_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: series_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.series_id_seq OWNED BY public.series.id;
-
-
---
 -- Name: taggings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -504,13 +437,6 @@ ALTER TABLE ONLY public.playlists ALTER COLUMN id SET DEFAULT nextval('public.pl
 
 
 --
--- Name: series id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.series ALTER COLUMN id SET DEFAULT nextval('public.series_id_seq'::regclass);
-
-
---
 -- Name: taggings id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -560,14 +486,6 @@ ALTER TABLE ONLY public.lessons
 
 ALTER TABLE ONLY public.playlists
     ADD CONSTRAINT playlists_pkey PRIMARY KEY (id);
-
-
---
--- Name: series series_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.series
-    ADD CONSTRAINT series_pkey PRIMARY KEY (id);
 
 
 --
@@ -733,48 +651,6 @@ CREATE INDEX index_playlists_on_site ON public.playlists USING btree (site);
 --
 
 CREATE INDEX index_playlists_on_slug ON public.playlists USING btree (slug);
-
-
---
--- Name: index_series_on_instructor_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_series_on_instructor_id ON public.series USING btree (instructor_id);
-
-
---
--- Name: index_series_on_kvstore; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_series_on_kvstore ON public.series USING gin (kvstore);
-
-
---
--- Name: index_series_on_resources_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_series_on_resources_id ON public.series USING btree (resources_id);
-
-
---
--- Name: index_series_on_row_order; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_series_on_row_order ON public.series USING btree (row_order);
-
-
---
--- Name: index_series_on_slug; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_series_on_slug ON public.series USING btree (slug);
-
-
---
--- Name: index_series_on_visibility_state; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_series_on_visibility_state ON public.series USING btree (visibility_state) WHERE ((visibility_state)::text = 'indexed'::text);
 
 
 --

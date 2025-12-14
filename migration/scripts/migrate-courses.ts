@@ -21,6 +21,10 @@ import {
 import { closeAll, getMysqlDb, railsDb } from "../src/lib/db";
 import { MigrationStreamWriter } from "../src/lib/migration-stream";
 import { createEvent } from "../src/lib/event-types";
+import {
+  saveCourseMapping,
+  closeMigrationDb,
+} from "../src/lib/migration-state";
 
 // ============================================================================
 // Configuration
@@ -194,15 +198,12 @@ async function migrateCourse(
       ],
     );
 
-    // Insert mapping entry
-    await mysqlDb.execute(
-      `INSERT INTO _migration_course_map (rails_id, cb_id, rails_slug, rails_title)
-       VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         cb_id = VALUES(cb_id),
-         rails_slug = VALUES(rails_slug),
-         rails_title = VALUES(rails_title)`,
-      [railsCourse.id, course.id, railsCourse.slug, railsCourse.title],
+    // Save mapping to local SQLite
+    saveCourseMapping(
+      railsCourse.id,
+      course.id,
+      railsCourse.slug,
+      railsCourse.title,
     );
 
     console.log(
@@ -253,7 +254,7 @@ async function migrateCourse(
 //   courseId: string,
 //   legacySeriesId: number,
 // ): Promise<void> {
-//   // TODO: Create entry in _migration_course_map for legacy ID lookups
+//   // TODO: Create entry in egghead_migration_course_map for legacy ID lookups
 //   // This allows us to map Rails series_id → Coursebuilder course ID
 //   console.log(
 //     `   📝 Would create mapping: Rails series ${legacySeriesId} → CB course ${courseId}`,
@@ -373,6 +374,7 @@ Duration:          ${duration}s
     console.error("\n❌ Migration failed:", err);
     process.exit(1);
   } finally {
+    closeMigrationDb();
     await closeAll();
   }
 }

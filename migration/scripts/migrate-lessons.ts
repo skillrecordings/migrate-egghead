@@ -34,6 +34,11 @@ import { closeAll, getMysqlDb, railsDb } from "../src/lib/db";
 import { MigrationStreamWriter } from "../src/lib/migration-stream";
 import { createEvent } from "../src/lib/event-types";
 import {
+  closeMigrationDb,
+  getCourseCbId,
+  saveLessonMapping,
+} from "../src/lib/migration-state";
+import {
   createLessonResource,
   createVideoResource,
   getMuxAssetForLesson,
@@ -145,15 +150,18 @@ function printSummary(stats: MigrationStats): void {
  * - Lessons in courses: JOIN via tracklists (courseId, position)
  * - Standalone lessons: LEFT JOIN returns NULL courseId/position
  *
+ * Note: 36 lessons appear in multiple indexed courses. We use DISTINCT ON (l.id)
+ * to return ONE row per lesson, prioritizing the first indexed course found.
+ *
  * Expected counts:
- * - ~5,025 lessons in courses (courseId NOT NULL)
+ * - ~4,989 unique lessons in indexed courses (courseId NOT NULL)
  * - ~1,650 standalone lessons (courseId NULL)
- * - ~6,675 total published lessons
+ * - ~6,639 total unique published lessons
  */
 async function fetchLessons(limit?: number): Promise<RailsLesson[]> {
   const query = limit
     ? railsDb<RailsLesson[]>`
-        SELECT 
+        SELECT DISTINCT ON (l.id)
           l.id,
           l.slug,
           l.title,
@@ -176,11 +184,11 @@ async function fetchLessons(limit?: number): Promise<RailsLesson[]> {
           ON p.id = t.playlist_id 
           AND p.visibility_state = 'indexed'
         WHERE l.state = 'published'
-        ORDER BY l.id
+        ORDER BY l.id, p.id NULLS LAST
         LIMIT ${limit}
       `
     : railsDb<RailsLesson[]>`
-        SELECT 
+        SELECT DISTINCT ON (l.id)
           l.id,
           l.slug,
           l.title,
@@ -203,7 +211,7 @@ async function fetchLessons(limit?: number): Promise<RailsLesson[]> {
           ON p.id = t.playlist_id 
           AND p.visibility_state = 'indexed'
         WHERE l.state = 'published'
-        ORDER BY l.id
+        ORDER BY l.id, p.id NULLS LAST
       `;
 
   const lessons = await query;
@@ -276,21 +284,20 @@ async function linkLessonToVideo(
 }
 
 /**
- * Store legacy ID mapping
+ * Create course → lesson link with position
  */
-async function storeLegacyMapping(
-  railsLessonId: number,
-  coursebuilderLessonId: string,
-  railsSlug: string,
-  railsTitle: string,
+async function linkLessonToCourse(
+  courseId: string,
+  lessonId: string,
+  position: number,
 ): Promise<void> {
   const mysqlDb = await getMysqlDb();
 
   await mysqlDb.execute(
-    `INSERT INTO _migration_lesson_map (rails_id, cb_id, rails_slug, rails_title)
-     VALUES (?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE cb_id = VALUES(cb_id), rails_slug = VALUES(rails_slug), rails_title = VALUES(rails_title)`,
-    [railsLessonId, coursebuilderLessonId, railsSlug, railsTitle],
+    `INSERT INTO egghead_ContentResourceResource (resourceOfId, resourceId, position, createdAt, updatedAt)
+     VALUES (?, ?, ?, NOW(), NOW())
+     ON DUPLICATE KEY UPDATE position = VALUES(position), updatedAt = NOW()`,
+    [courseId, lessonId, position],
   );
 }
 
@@ -389,13 +396,25 @@ async function migrateLessons() {
             await linkLessonToVideo(lessonResource.id, videoResource.id);
           }
 
-          // Store legacy mapping
-          await storeLegacyMapping(
+          // Store legacy mapping (local SQLite)
+          saveLessonMapping(
             railsLesson.id,
             lessonResource.id,
             railsLesson.slug,
             railsLesson.title,
           );
+
+          // Link lesson to course (if lesson belongs to a course)
+          if (railsLesson.courseId !== null && railsLesson.position !== null) {
+            const cbCourseId = getCourseCbId(railsLesson.courseId);
+            if (cbCourseId) {
+              await linkLessonToCourse(
+                cbCourseId,
+                lessonResource.id,
+                railsLesson.position,
+              );
+            }
+          }
 
           stats.lessonsCreated++;
         } else {
@@ -482,6 +501,7 @@ async function migrateLessons() {
   if (sqliteDb) {
     sqliteDb.close();
   }
+  closeMigrationDb();
 
   // Emit complete event
   if (writer) {

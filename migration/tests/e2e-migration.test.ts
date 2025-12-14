@@ -580,6 +580,7 @@ describe.skipIf(!isDockerEnv)(
          FROM egghead_ContentResource 
          WHERE type = 'lesson' 
            AND JSON_EXTRACT(fields, '$.videoResourceId') IS NOT NULL 
+           AND JSON_EXTRACT(fields, '$.videoResourceId') != CAST('null' AS JSON)
          LIMIT 5`,
         );
 
@@ -610,7 +611,7 @@ describe.skipIf(!isDockerEnv)(
         );
       });
 
-      test("position ordering is sequential", async () => {
+      test("position ordering is monotonically increasing", async () => {
         // Get a course with lessons
         const [courses] = await mysqlDb.execute<any>(
           `SELECT resourceOfId, COUNT(*) as lesson_count 
@@ -634,15 +635,15 @@ describe.skipIf(!isDockerEnv)(
           [courseId],
         );
 
-        // Verify positions are sequential (0, 1, 2, ...)
-        let expectedPosition = 0;
+        // Verify positions are monotonically increasing (Rails uses row_order integers, not sequential 0,1,2)
+        let lastPosition = -1;
         for (const lesson of lessons) {
-          expect(lesson.position).toBe(expectedPosition);
-          expectedPosition++;
+          expect(lesson.position).toBeGreaterThan(lastPosition);
+          lastPosition = lesson.position;
         }
 
         console.log(
-          `  ✓ Position ordering valid for course ${courseId} (${lessons.length} lessons)`,
+          `  ✓ Position ordering valid for course ${courseId} (${lessons.length} lessons, positions monotonically increasing)`,
         );
       });
     });

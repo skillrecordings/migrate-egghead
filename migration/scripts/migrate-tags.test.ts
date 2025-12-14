@@ -100,7 +100,7 @@ describe("Tag Migration (Integration)", () => {
     // Table already exists from init.sql with rails_id column
     // Insert a mapping
     await mysqlDb.execute(
-      `INSERT INTO _migration_tag_map (rails_id, cb_id, rails_slug)
+      `INSERT INTO egghead_migration_tag_map (rails_id, cb_id, rails_slug)
       VALUES (?, ?, ?)
       ON DUPLICATE KEY UPDATE cb_id = VALUES(cb_id)`,
       [999, "test_tag_1", "test-slug"],
@@ -108,7 +108,7 @@ describe("Tag Migration (Integration)", () => {
 
     // Query back
     const [rows] = await mysqlDb.execute(
-      "SELECT rails_id, cb_id, rails_slug FROM _migration_tag_map WHERE rails_id = ?",
+      "SELECT rails_id, cb_id, rails_slug FROM egghead_migration_tag_map WHERE rails_id = ?",
       [999],
     );
 
@@ -126,7 +126,7 @@ describe("Tag Migration (Integration)", () => {
 
     // Clean up
     await mysqlDb.execute(
-      "DELETE FROM _migration_tag_map WHERE rails_id = ?",
+      "DELETE FROM egghead_migration_tag_map WHERE rails_id = ?",
       [999],
     );
   });
