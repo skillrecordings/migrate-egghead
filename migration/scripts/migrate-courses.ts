@@ -73,6 +73,8 @@ interface MigrationStats {
   total: number;
   migrated: number;
   skipped: number;
+  skippedDuplicateCourse: number;
+  skippedDuplicatePost: number;
   errors: number;
 }
 
@@ -142,10 +144,42 @@ async function getInstructorUserId(
   return SYSTEM_USER_ID;
 }
 
-async function checkIfCourseExists(_legacySeriesId: number): Promise<boolean> {
-  // TODO: Query Coursebuilder MySQL to check if course already migrated
-  // For now, assume not exists (idempotency will be handled by ON CONFLICT DO NOTHING)
-  return false;
+/**
+ * Check if a course with this slug already exists in Coursebuilder
+ * This prevents duplicates when migration runs multiple times
+ */
+async function checkIfCourseExistsBySlug(slug: string): Promise<boolean> {
+  const mysqlDb = await getMysqlDb();
+
+  const [rows] = await mysqlDb.execute(
+    `SELECT COUNT(*) as count
+     FROM egghead_ContentResource
+     WHERE type = 'course'
+     AND JSON_UNQUOTE(JSON_EXTRACT(fields, '$.slug')) = ?`,
+    [slug],
+  );
+
+  const result = rows as Array<{ count: number }>;
+  return result[0]?.count > 0;
+}
+
+/**
+ * Check if a post with this slug already exists (CB-published content)
+ * If so, we should skip migrating a course with the same slug
+ */
+async function checkForDuplicatePost(slug: string): Promise<boolean> {
+  const mysqlDb = await getMysqlDb();
+
+  const [rows] = await mysqlDb.execute(
+    `SELECT COUNT(*) as count
+     FROM egghead_ContentResource
+     WHERE type = 'post'
+     AND JSON_UNQUOTE(JSON_EXTRACT(fields, '$.slug')) = ?`,
+    [slug],
+  );
+
+  const result = rows as Array<{ count: number }>;
+  return result[0]?.count > 0;
 }
 
 async function migrateCourse(
@@ -153,11 +187,23 @@ async function migrateCourse(
   stats: MigrationStats,
 ): Promise<void> {
   try {
-    // Check if already migrated
-    const exists = await checkIfCourseExists(railsCourse.id);
-    if (exists) {
-      console.log(`   ⏭️  Course ${railsCourse.id} already migrated, skipping`);
-      stats.skipped++;
+    // Check if course with this slug already exists (idempotency)
+    const courseExists = await checkIfCourseExistsBySlug(railsCourse.slug);
+    if (courseExists) {
+      console.log(
+        `   ⏭️  Course slug "${railsCourse.slug}" already exists, skipping`,
+      );
+      stats.skippedDuplicateCourse++;
+      return;
+    }
+
+    // Check if a post with this slug exists (CB-published content takes precedence)
+    const postExists = await checkForDuplicatePost(railsCourse.slug);
+    if (postExists) {
+      console.log(
+        `   ⏭️  Post with slug "${railsCourse.slug}" exists, skipping course migration`,
+      );
+      stats.skippedDuplicatePost++;
       return;
     }
 
@@ -275,6 +321,8 @@ async function main(): Promise<void> {
     total: 0,
     migrated: 0,
     skipped: 0,
+    skippedDuplicateCourse: 0,
+    skippedDuplicatePost: 0,
     errors: 0,
   };
 
@@ -358,11 +406,13 @@ async function main(): Promise<void> {
 ║  Migration Complete                                        ║
 ╚════════════════════════════════════════════════════════════╝
 
-Total courses:     ${stats.total}
-Migrated:          ${stats.migrated}
-Skipped (exists):  ${stats.skipped}
-Errors:            ${stats.errors}
-Duration:          ${duration}s
+Total courses:           ${stats.total}
+Migrated:                ${stats.migrated}
+Skipped (exists):        ${stats.skipped}
+Skipped (dupe course):   ${stats.skippedDuplicateCourse}
+Skipped (dupe post):     ${stats.skippedDuplicatePost}
+Errors:                  ${stats.errors}
+Duration:                ${duration}s
 
     `);
 

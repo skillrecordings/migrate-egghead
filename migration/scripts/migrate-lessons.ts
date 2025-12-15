@@ -18,8 +18,21 @@
  * - Standalone lessons have NULL courseId/position
  * - Lessons without videos are marked as 'retired'
  *
+ * ⚠️  CRITICAL: DUPLICATE PREVENTION
+ * Before creating a type='lesson' record, we check if a type='post' with
+ * postType='lesson' and the same slug already exists. If so, we SKIP the
+ * migration for that lesson - the CB-published version takes precedence.
+ *
+ * This prevents route conflicts in Vercel builds where both:
+ *   - /lessons/[slug] from type='lesson' (migration)
+ *   - /lessons/[slug] from type='post' (CB publishing)
+ * would try to generate the same route.
+ *
+ * See: Dec 15, 2025 incident - 261 duplicates deleted via delete-duplicate-lessons.ts
+ *
  * Features:
  * - Idempotency: Uses ON DUPLICATE KEY UPDATE
+ * - Duplicate prevention: Skips lessons that exist as type='post'
  * - Batch processing: Processes in chunks to avoid memory issues
  * - Progress tracking: Real-time progress updates
  * - Error handling: Continues on individual failures, logs errors
@@ -74,6 +87,8 @@ interface MigrationStats {
   videoResourcesCreated: number;
   lessonsCreated: number;
   skippedExisting: number;
+  skippedDuplicatePost: number; // Lessons that already exist as type='post'
+  skippedHashCollision: number; // Lessons that would collide via LIKE %hash
   retiredNoVideo: number;
   inCourses: number;
   standalone: number;
@@ -88,6 +103,8 @@ function createStats(): MigrationStats {
     videoResourcesCreated: 0,
     lessonsCreated: 0,
     skippedExisting: 0,
+    skippedDuplicatePost: 0,
+    skippedHashCollision: 0,
     retiredNoVideo: 0,
     inCourses: 0,
     standalone: 0,
@@ -133,6 +150,12 @@ function printSummary(stats: MigrationStats): void {
     `  - Standalone:      ${stats.standalone.toLocaleString()} (no course)`,
   );
   console.log(`Skipped (existing):  ${stats.skippedExisting.toLocaleString()}`);
+  console.log(
+    `Skipped (CB post):   ${stats.skippedDuplicatePost.toLocaleString()} (already published via CB)`,
+  );
+  console.log(
+    `Skipped (hash):      ${stats.skippedHashCollision.toLocaleString()} (would collide via LIKE %hash)`,
+  );
   console.log(`Retired (no video):  ${stats.retiredNoVideo.toLocaleString()}`);
   console.log(`Errors:              ${stats.errors.toLocaleString()}`);
   console.log(`Duration:            ${duration}s (${rate} items/sec)`);
@@ -241,6 +264,85 @@ async function insertVideoResource(
       videoResource.updatedAt,
     ],
   );
+}
+
+/**
+ * Check if a type='post' with postType='lesson' and the same slug exists.
+ * These are CB-published lessons that take precedence over migration.
+ *
+ * Returns true if a duplicate exists (should skip migration)
+ */
+async function checkForDuplicatePost(slug: string): Promise<boolean> {
+  const mysqlDb = await getMysqlDb();
+
+  // Use execute with params (works with both mysql2 and PlanetScale)
+  const [rows] = await mysqlDb.execute(
+    `SELECT COUNT(*) as count
+     FROM egghead_ContentResource
+     WHERE type = 'post'
+     AND JSON_EXTRACT(fields, '$.postType') = 'lesson'
+     AND JSON_EXTRACT(fields, '$.slug') = ?`,
+    [slug],
+  );
+
+  const result = rows as Array<{ count: number }>;
+  return result[0]?.count > 0;
+}
+
+/**
+ * Check if a type='lesson' with the same slug already exists.
+ * This provides idempotency when migration runs multiple times.
+ *
+ * Returns true if lesson already exists (should skip migration)
+ */
+async function checkForExistingLesson(slug: string): Promise<boolean> {
+  const mysqlDb = await getMysqlDb();
+
+  const [rows] = await mysqlDb.execute(
+    `SELECT COUNT(*) as count
+     FROM egghead_ContentResource
+     WHERE type = 'lesson'
+     AND JSON_UNQUOTE(JSON_EXTRACT(fields, '$.slug')) = ?`,
+    [slug],
+  );
+
+  const result = rows as Array<{ count: number }>;
+  return result[0]?.count > 0;
+}
+
+/**
+ * Check if a post exists with the same hash suffix.
+ *
+ * The get-post.ts query uses LIKE %hash pattern matching, so a lesson with
+ * slug "foo-bar-abc123" would collide with a post "foo-bar~abc123" because
+ * both match LIKE %abc123.
+ *
+ * This catches cases where:
+ * - Different separator: ~abc123 vs -abc123
+ * - Different casing: "Mongo DB" vs "MongoDB"
+ * - But same hash suffix
+ *
+ * Returns true if a post with matching hash exists (should skip migration)
+ */
+async function checkForPostWithMatchingHash(slug: string): Promise<boolean> {
+  // Extract hash from slug (last segment after ~ or -)
+  const hashMatch = slug.match(/[-~]([a-z0-9]+)$/);
+  if (!hashMatch) return false;
+
+  const hash = hashMatch[1];
+  const mysqlDb = await getMysqlDb();
+
+  const [rows] = await mysqlDb.execute(
+    `SELECT COUNT(*) as count
+     FROM egghead_ContentResource
+     WHERE type = 'post'
+     AND (JSON_UNQUOTE(JSON_EXTRACT(fields, '$.slug')) LIKE ?
+          OR JSON_UNQUOTE(JSON_EXTRACT(fields, '$.slug')) LIKE ?)`,
+    [`%~${hash}`, `%-${hash}`],
+  );
+
+  const result = rows as Array<{ count: number }>;
+  return result[0]?.count > 0;
 }
 
 /**
@@ -358,8 +460,40 @@ async function migrateLessons() {
 
     for (const railsLesson of batch) {
       try {
-        // Note: Idempotency is handled by ON DUPLICATE KEY UPDATE in insert functions
-        // No need to check if already migrated - upserts handle it
+        // ⚠️ CRITICAL: Check for duplicate type='post' before creating type='lesson'
+        // CB-published lessons take precedence over migration
+        // See: Dec 15, 2025 incident - 261 duplicates caused Vercel build failures
+        const isDuplicatePost = await checkForDuplicatePost(railsLesson.slug);
+        if (isDuplicatePost) {
+          stats.skippedDuplicatePost++;
+          stats.processed++;
+          printProgress(stats);
+          continue; // Skip this lesson - CB version exists
+        }
+
+        // Check if lesson with this slug already exists (idempotency)
+        // This prevents duplicates when migration runs multiple times
+        // (IDs are generated with cuid2, so ON DUPLICATE KEY won't catch slug dupes)
+        const lessonExists = await checkForExistingLesson(railsLesson.slug);
+        if (lessonExists) {
+          stats.skippedExisting++;
+          stats.processed++;
+          printProgress(stats);
+          continue; // Skip - already migrated
+        }
+
+        // Check for hash-based collision with posts
+        // The get-post.ts query uses LIKE %hash, so "foo-abc123" collides with "foo~abc123"
+        // See: Dec 15, 2025 - 3 lessons caused build failures due to hash collision
+        const hasHashCollision = await checkForPostWithMatchingHash(
+          railsLesson.slug,
+        );
+        if (hasHashCollision) {
+          stats.skippedHashCollision++;
+          stats.processed++;
+          printProgress(stats);
+          continue; // Skip - would collide with CB post via LIKE %hash
+        }
 
         // Resolve Mux asset
         const muxAsset = await getMuxAssetForLesson(railsLesson, sqliteDb);
