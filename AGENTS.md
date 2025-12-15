@@ -33,19 +33,19 @@ We're killing **egghead-rails** AND **egghead-next**, consolidating everything o
 
 ### Current Phase
 
-> **🚨 PRIORITY: Complete Phased Content Migration (Phases 3-5) BEFORE anything else.**
+> **✅ CONTENT MIGRATION COMPLETE** (Dec 15, 2025)
 >
-> We have a logarithmic test scaling approach:
+> All courses and lessons migrated to Coursebuilder:
 >
-> - Phase 1: 5 courses ✅ (curated, tested)
-> - Phase 2: 20 courses ✅ (curated, tested)
-> - Phase 3: 80 courses ⏳ (algorithmic - IN PROGRESS)
-> - Phase 4: 200 courses ⏳ (algorithmic)
-> - Phase 5: 420 courses ⏳ (full production)
+> - **423 courses** migrated
+> - **11,001 lessons** migrated
+> - **10,337 videoResources** linked
+> - **369 CB-published posts** preserved (take precedence)
+> - **Vercel build passing** - 751 static pages
 >
-> **DO NOT work on other beads until Phases 3-5 are complete and E2E tests pass.**
+> Migration scripts are now **idempotent** - safe to re-run.
 
-**POC complete.** Content migration validated. Now executing Phased Content Migration (Phases 3-5).
+**Next:** Human gate review, then proceed to user/subscription migration.
 
 ### POC Learnings (December 2025)
 
@@ -65,6 +65,29 @@ Key discoveries from migrating 2 courses (Claude Code Essentials + Fix Common Gi
 - `investigation/poc-migrate-legacy-course.ts` - Rails→CB migration
 - `investigation/src/lib/migration-utils.ts` - Shared utilities
 - `reports/POC_LEARNINGS.md` - Full synthesis
+
+### Dec 15, 2025 Incident: Duplicate Content
+
+**Problem:** Vercel builds failed with route conflicts after content migration.
+
+**Three types of duplicates found:**
+
+1. **Same slug, different types** (lesson vs post) - 264 records
+2. **Same slug, same type** (migration ran twice) - 438 courses
+3. **Different slug, same hash suffix** (LIKE %hash matches both) - 3 lessons
+
+**Resolution:**
+
+- Deleted duplicates (CB-published content takes precedence)
+- Updated `migrate-courses.ts` and `migrate-lessons.ts` with idempotency checks
+- Fixed `get-post.ts` query to filter by `type='post'`
+
+**Key Insight:** ID patterns reveal origin:
+
+- `post_xxxxx` = CB-published (Coursebuilder native)
+- Random 24-char cuid = Migration-created
+
+See `LORE.md` for full incident documentation.
 
 ---
 
