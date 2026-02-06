@@ -149,9 +149,9 @@ The instrumentation in egghead-rails tells us exactly what the app does. **It do
 - Checks `authentication_token`, returns user profile. Cookie/token based.
 
 ### 3. Pricing Engine (~1K/day REST)
-- PPP (Purchasing Power Parity) checks via MaxMind (broken) + Stripe coupon lookups
-- 17,026 Stripe API calls/day with **zero caching** (99% are `retrieve_coupon`)
-- 63 PPP coupon errors/day (43% of all errors)
+- PPP (Purchasing Power Parity) checks via CDN geo headers + Stripe coupon lookups
+- 8,053 Stripe API calls/day (down from 17K — coupon caching at 93.9% hit rate)
+- 17 PPP coupon errors/day (down from 63 — still Stripe InvalidRequestError residual)
 
 ### 4. Content Pipeline (3 workers, ~2,400 events/day)
 - `SyncLessonEnhancedTranscriptFromGithubWorker`: 2,158/day
@@ -160,13 +160,87 @@ The instrumentation in egghead-rails tells us exactly what the app does. **It do
 
 **Everything else is long tail.** 21 of 96 workers are alive. The other 75 are dead code.
 
-### Key Metrics
-- **617K total events/day** (331K structured)
+### Key Metrics (Updated Feb 6, 2026)
+- **618K total events/day** (331K structured)
 - **GraphQL:REST ratio:** 5.7:1
-- **Error rate:** ~147/day (43% PPP coupon failures)
+- **Error rate:** ~66 real incidents/day (PPP down 73%, Stripe caching live)
 - **Active workers:** 21 of 96 (~22%)
+- **Stripe coupon cache hit rate:** 93.9%
 
 > See `egghead-rails/MEMORIES.md` for full baselines and institutional memory.
+
+---
+
+## Frontend Reality (from Axiom Vercel dataset, Feb 6 2026)
+
+The Vercel `vercel` dataset contains egghead-next frontend logs. Filter: `request.host startswith "egghead.io"`.
+
+**21K frontend requests/day generate 618K backend events — an 80x amplification factor.**
+
+### The Cache Catastrophe
+
+**80% of all Vercel requests are cache MISSes.** Core pages have zero cache hits:
+
+| Route | Traffic/2h | Cache HIT | Avg Latency | P95 Latency |
+|-------|-----------|-----------|-------------|-------------|
+| `/courses/[course]` | 4,450 | **0** | **3,828ms** | **7,046ms** |
+| `/q/[[...all]]` (search) | 5,944 | 10 | — | — |
+| `/lessons/[slug]` | 1,766 | **0** | 642ms | 1,391ms |
+| `/api/trpc/[trpc]` | 1,389 | **0** | — | — |
+| `/api/pricing` | 862 | **0** | 442ms | 668ms |
+
+Course pages are **3.8 seconds average, 7 seconds at p95**. Every page view generates cold lambda → Rails API → Stripe API waterfall.
+
+### The 5 Things the Frontend Does
+
+1. **Search & Browse** — `/q/[[...all]]` is #1 route (5,944/2h), all uncached
+2. **Course Pages** — `/courses/[course]` #2 (4,450/2h), 3.8s avg, 500ing (16/2h)
+3. **Lesson Pages** — `/lessons/[slug]` #3 (1,766/2h), 642ms avg
+4. **tRPC Batches** — Feature flag checks + data fetches (1,389/2h)
+5. **CIO Subscriber Sync** — `/api/cio-subscriber` (927/2h), **11% error rate**
+
+### tRPC Feature Flag Tax
+
+Every page load fires a batched tRPC call with **6 duplicate feature flag checks**:
+- `featureFlagLifetimeSale`, `featureFlagCursorWorkshopSale` ×3, `featureFlagClaudeCodeWorkshopSale` ×2
+- 46% of all tRPC calls are JUST these flags with no other data
+- Flags come from Vercel Edge Config (`src/lib/feature-flags.ts`)
+
+### `/api/cio-subscriber` is Broken
+
+100 of 927 requests return 500 in 2h (**11% error rate**). Endpoint:
+- Fetches egghead user from Rails (`/api/v1/users/current?minimal=true`)
+- Updates Customer.io tracking API
+- Retrieves CIO attributes + sets cookie
+- **File:** `src/pages/api/cio-subscriber.ts`
+
+### Frontend Error Budget (2h sample)
+
+| Route | 500s | Notes |
+|-------|------|-------|
+| `/api/cio-subscriber` | 100 | CIO API or Rails auth failure |
+| `/courses/[course]` | 16 | Rails API timeout? |
+| `/api/trpc/[trpc]` | 16 | Various tRPC failures |
+| `/blog/*` | 6 | ISR revalidation failures |
+| `/api/pricing` | 4 | Rails pricing + Stripe cascade |
+
+### Frontend Architecture (egghead-next key files)
+
+| Purpose | Path |
+|---------|------|
+| tRPC router | `src/server/routers/_app.ts` |
+| tRPC endpoint | `src/app/api/trpc/[trpc]/route.ts` |
+| CIO subscriber | `src/pages/api/cio-subscriber.ts` |
+| Pricing proxy | `src/app/api/pricing/route.ts` |
+| Feature flags | `src/lib/feature-flags.ts` |
+| Feature flag router | `src/server/routers/feature-flag.ts` |
+| Next.js config | `next.config.mjs` |
+
+### Traffic Regions
+
+Singapore 37% > Frankfurt 21% > Virginia 19%. Asia-Pacific dominates — cross-region latency to US Rails backend on every uncached request.
+
+> **Tracking:** [migrate-egghead#21](https://github.com/skillrecordings/migrate-egghead/issues/21)
 
 ---
 
@@ -176,11 +250,12 @@ Production logs flow: Rails → CloudWatch → Axiom (`egghead-rails` dataset).
 
 ### log-beast CLI
 
-Quick Axiom queries via `~/Code/skillrecordings/log-beast` (Bun-based):
+Quick Axiom queries via `~/Code/skillrecordings/log-beast` (Bun-based). Repo: https://github.com/skillrecordings/log-beast (private).
 
 ```bash
 alias log-beast='bun run ~/Code/skillrecordings/log-beast/src/cli.ts'
 
+# Backend (egghead-rails dataset)
 log-beast dashboard        # Full health overview
 log-beast overview         # Event breakdown
 log-beast errors -h 24     # Errors over 24 hours
@@ -189,10 +264,26 @@ log-beast stripe           # Stripe API call breakdown
 log-beast traffic -h 24    # 24h traffic histogram
 log-beast health           # Worker success/failure rates
 log-beast live             # Real-time errors (last 15 min)
+
+# Frontend (vercel dataset, egghead.io)
+log-beast frontend         # Full frontend dashboard (routes, cache, errors)
+log-beast frontend-errors  # 500 errors by route
+log-beast frontend-cache   # Cache HIT/MISS/STALE by route
+log-beast frontend-perf    # Lambda duration (avg, p95) by route
+log-beast frontend-regions # Traffic by Vercel edge region
+
+# Custom
 log-beast raw '<APL>'      # Custom APL query
 ```
 
 Requires `AGENT_AXIOM_TOKEN` env var.
+
+### Two Axiom Datasets
+
+| Dataset | Source | Filter | Content |
+|---------|--------|--------|---------|
+| `egghead-rails` | CloudWatch | Fields prefixed `unknown.*` | Rails backend (API, workers, Stripe) |
+| `vercel` | Vercel integration | `request.host startswith "egghead.io"` | Next.js frontend (routes, cache, vitals) |
 
 ### Raw APL Queries
 
@@ -258,6 +349,16 @@ skill-cli linear issues --team EGG --status "Todo"
 | `/axiom-patrol` | "health check", "what's happening in prod" | Session-start production health briefing |
 | `/dead-code-hunter` | "dead code", "what can we delete" | Cross-reference Axiom vs codebase for zero-traffic paths |
 | `/migration-triage` | "triage issues", "audit issues" | Cross-platform issue audit (Linear + GitHub) |
+
+### GitHub Issues (Active)
+
+| Repo | # | Title | Priority |
+|------|---|-------|----------|
+| migrate-egghead | #21 | Frontend 80% cache miss + 152 errors/2h | **HIGH** |
+| migrate-egghead | #17 | Direct Postgres strategy (strangler fig) | HIGH |
+| migrate-egghead | #15 | Auth drop-off signal (10:1 REST:GraphQL) | HIGH |
+| migrate-egghead | #16 | PPP coupon failures deep dive | MEDIUM |
+| migrate-egghead | #12 | Stripe coupon caching (deployed, 93.9% hit) | DONE |
 
 ---
 
