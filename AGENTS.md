@@ -47,6 +47,50 @@ We're killing **egghead-rails** AND **egghead-next**, consolidating everything o
 
 **Next:** Human gate review, then proceed to user/subscription migration.
 
+### Interim Strategy: Direct Postgres Access from egghead-next (Feb 2026)
+
+> **See [migrate-egghead#17](https://github.com/skillrecordings/migrate-egghead/issues/17) for the full plan.**
+
+While the Coursebuilder migration progresses phase-by-phase, we have a faster strangler fig play: **egghead-next can bypass Rails entirely and hit Postgres directly.** This kills massive chunks of Rails traffic immediately without waiting for the full CB migration.
+
+**The math:**
+- `getLessonComments` + `getLesson` = **88.5% of all GraphQL traffic** (166K ops/day)
+- `UsersController#current` = **55% of all REST traffic** (18K reqs/day)
+- All are pure DB reads — no complex business logic preventing direct access
+
+**How it works:**
+```typescript
+// egghead-next already has this in src/db/index.ts
+import { pgQuery } from '@/db'
+
+// Instead of: GraphQL → Rails → ActiveRecord → Postgres → back through Rails
+// Do this:    pgQuery → Postgres → done
+export async function getLessonComments(slug: string) {
+  const { rows } = await pgQuery(`
+    SELECT c.id, c.comment, c.created_at, c.reply_to_id,
+           CONCAT(u.first_name, ' ', u.last_name) as user_name, u.avatar_url
+    FROM comments c
+    JOIN lessons l ON l.id = c.commentable_id AND c.commentable_type = 'Lesson'
+    JOIN users u ON u.id = c.user_id
+    WHERE l.slug = $1 AND c.state = 'published'
+    ORDER BY c.created_at ASC
+  `, [slug])
+  return rows
+}
+```
+
+**Rules:** Raw parameterized SQL, no ORM. Wrap with `unstable_cache` for Next.js caching. Use the `/code-path-migrator` skill for the full workflow.
+
+**Priority queue (from Axiom, Feb 5 2026):**
+
+| # | Code Path | Traffic/Day | Kill Impact |
+|---|-----------|------------|-------------|
+| 1 | `getLessonComments` (GraphQL) | 83,688 | 44.6% of all GraphQL |
+| 2 | `getLesson` (GraphQL) | 82,372 | 43.9% of all GraphQL |
+| 3 | `UsersController#current` (REST) | 18,005 | 55% of all REST |
+| 4 | `LessonsController#transcript` (REST) | 5,836 | Content delivery |
+| 5 | `LessonsController#subtitles` (REST) | 4,105 | Content delivery |
+
 ### POC Learnings (December 2025)
 
 Key discoveries from migrating 2 courses (Claude Code Essentials + Fix Common Git Mistakes):
@@ -91,6 +135,132 @@ See `LORE.md` for full incident documentation.
 
 ---
 
+## Production Reality (from Axiom, Feb 5 2026)
+
+The instrumentation in egghead-rails tells us exactly what the app does. **It does 4 things:**
+
+### 1. Lesson Viewer (88.5% of GraphQL)
+- `getLessonComments`: 83,688 ops/day (44.6%)
+- `getLesson`: 82,372 ops/day (43.9%)
+- Both are pure Postgres reads. No business logic. Direct DB access kills them.
+
+### 2. Auth Check (55% of REST)
+- `UsersController#current`: 18,005 reqs/day
+- Checks `authentication_token`, returns user profile. Cookie/token based.
+
+### 3. Pricing Engine (~1K/day REST)
+- PPP (Purchasing Power Parity) checks via MaxMind (broken) + Stripe coupon lookups
+- 17,026 Stripe API calls/day with **zero caching** (99% are `retrieve_coupon`)
+- 63 PPP coupon errors/day (43% of all errors)
+
+### 4. Content Pipeline (3 workers, ~2,400 events/day)
+- `SyncLessonEnhancedTranscriptFromGithubWorker`: 2,158/day
+- `LessonPublishWorker`: 129/day
+- `SyncPodcastsWorker`: 129/day
+
+**Everything else is long tail.** 21 of 96 workers are alive. The other 75 are dead code.
+
+### Key Metrics
+- **617K total events/day** (331K structured)
+- **GraphQL:REST ratio:** 5.7:1
+- **Error rate:** ~147/day (43% PPP coupon failures)
+- **Active workers:** 21 of 96 (~22%)
+
+> See `egghead-rails/MEMORIES.md` for full baselines and institutional memory.
+
+---
+
+## Axiom Observability Tooling
+
+Production logs flow: Rails → CloudWatch → Axiom (`egghead-rails` dataset).
+
+### log-beast CLI
+
+Quick Axiom queries via `~/Code/skillrecordings/log-beast` (Bun-based):
+
+```bash
+alias log-beast='bun run ~/Code/skillrecordings/log-beast/src/cli.ts'
+
+log-beast dashboard        # Full health overview
+log-beast overview         # Event breakdown
+log-beast errors -h 24     # Errors over 24 hours
+log-beast workers -h 720   # Worker activity over 30 days
+log-beast stripe           # Stripe API call breakdown
+log-beast traffic -h 24    # 24h traffic histogram
+log-beast health           # Worker success/failure rates
+log-beast live             # Real-time errors (last 15 min)
+log-beast raw '<APL>'      # Custom APL query
+```
+
+Requires `AGENT_AXIOM_TOKEN` env var.
+
+### Raw APL Queries
+
+```bash
+curl -s -X POST "https://api.axiom.co/v1/datasets/_apl?format=legacy" \
+  -H "Authorization: Bearer $AGENT_AXIOM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "apl": "[\"egghead-rails\"] | where [\"unknown.event\"] == \"graphql.execute\" | summarize count() by [\"unknown.operation_name\"]",
+    "startTime": "2026-02-04T00:00:00Z",
+    "endTime": "2026-02-05T00:00:00Z"
+  }'
+```
+
+**APL gotchas:**
+- Fields prefixed with `unknown.*` (CloudWatch integration artifact)
+- Use bracket notation: `['unknown.event']`, `['unknown.operation_name']`
+- Duration fields are strings — can't aggregate avg/p95
+
+### Environment Variables
+
+| Variable | Source | Purpose |
+|----------|--------|---------|
+| `AGENT_AXIOM_TOKEN` | `~/.zshrc` | Axiom API access |
+| `AGENT_AXIOM_DATASET` | `~/.zshrc` | Dataset name (`egghead-rails`) |
+
+---
+
+## Linear Integration (skill-cli)
+
+The EGG team in Linear tracks user-reported bugs and support tickets.
+
+```bash
+skill-cli linear issues --team EGG --status "In Progress"
+skill-cli linear issues --team EGG --status "Backlog" --priority urgent
+skill-cli linear issues --team EGG --status "Todo"
+```
+
+**Key clusters (Feb 2026):** Auth/login failures (EGG-413, EGG-412), payment/paywall bugs (EGG-415, EGG-387), and PPP errors.
+
+### Where to File What
+
+| Tracker | Purpose | Example |
+|---------|---------|---------|
+| **Linear EGG** | User-reported bugs, support tickets | "Can't log in", "Paywall bug" |
+| **GitHub egghead-rails** | Security CVEs, internal bugs | "#5295 security gem upgrades" |
+| **GitHub migrate-egghead** | Migration discoveries, strategy | "#17 Direct Postgres strategy" |
+
+---
+
+## Available Skills
+
+### In this repo (`migrate-egghead/.claude/skills/`)
+
+| Skill | Trigger | Purpose |
+|-------|---------|---------|
+| `/code-path-migrator` | "migrate endpoint", "port resolver", "rawdog postgres" | Trace Rails code path → generate raw SQL TS function for egghead-next |
+
+### In egghead-rails (`egghead-rails/.claude/skills/`)
+
+| Skill | Trigger | Purpose |
+|-------|---------|---------|
+| `/axiom-patrol` | "health check", "what's happening in prod" | Session-start production health briefing |
+| `/dead-code-hunter` | "dead code", "what can we delete" | Cross-reference Axiom vs codebase for zero-traffic paths |
+| `/migration-triage` | "triage issues", "audit issues" | Cross-platform issue audit (Linear + GitHub) |
+
+---
+
 ## CRITICAL: README.md IS THE SOURCE OF TRUTH
 
 **The README.md defines the migration phases and their order.** Always check it before starting work.
@@ -98,12 +268,14 @@ See `LORE.md` for full incident documentation.
 ### Phase Execution Order (from README)
 
 ```
-Phase 0: Minimum Viable Safety     ← CURRENT (epic: phase-0)
+Phase 0: Minimum Viable Safety     ✅ COMPLETE
   └─ E2E test, Inngest dev server, idempotency columns
-  └─ Human Gate: phase-0.4
 
-Phase 1: Data Migration            (epic: phase-1)
-  └─ Users, Orgs, Subscriptions, Progress, Content
+Phase 1A: Content Migration        ✅ COMPLETE (Dec 15, 2025)
+  └─ 423 courses, 11,001 lessons, 10,337 videoResources
+
+Phase 1B: User/Subscription Migration  ← NEXT (epic: phase-1)
+  └─ Users, Orgs, Subscriptions, Progress
   └─ Human Gate: phase-1.9
 
 Phase 2: Webhook Handlers          (epic: phase-2)
@@ -373,7 +545,24 @@ Examples:
 
 ## Database Access
 
-### Three Databases
+### egghead-next Direct Postgres (Strangler Fig)
+
+egghead-next already has a configured Postgres pool in `egghead-next/src/db/index.ts`:
+
+```typescript
+import { pgQuery } from '@/db'  // Pool with SSL, connected to Rails Postgres
+
+// Raw parameterized SQL — no ORM needed
+const { rows } = await pgQuery<LessonComment>(`
+  SELECT ... FROM comments c
+  JOIN lessons l ON l.id = c.commentable_id
+  WHERE l.slug = $1 AND c.state = 'published'
+`, [slug])
+```
+
+This is the **interim strangler fig** — bypass Rails entirely for read-heavy paths while the full CB migration progresses. See `/code-path-migrator` skill for the workflow.
+
+### Three Databases (Migration)
 
 | Database                                      | Connection                                 | Purpose                                           |
 | --------------------------------------------- | ------------------------------------------ | ------------------------------------------------- |
@@ -537,6 +726,299 @@ Before migrating any entity type:
 | E2E verification  | ✅ Manual | Browser automation via `next-devtools_browser_eval` |
 
 **Next bead to create**: `ntu.0` - Set up migration test infrastructure
+
+---
+
+## Verifying Work (Assessment Evidence)
+
+From Understanding by Design:
+
+> "What would count as evidence of successful learning?"
+
+Applied to migrations:
+
+> **"What would count as evidence that the migration worked?"**
+
+### The Twin Sins to Avoid
+
+Borrowed from UbD's framework for avoiding shallow work:
+
+#### 1. Activity-Oriented (Busy Work Without Outcomes)
+
+The agent runs scripts but doesn't verify results.
+
+**BAD Examples:**
+
+- "I ran the migration script" ❌
+- "Script completed successfully" ❌
+- "Deployed the webhook handler" ❌
+- "Tests pass" ❌ (What do the tests actually verify?)
+
+**GOOD Examples:**
+
+- "Migration complete: 423 courses in CB, matches Rails count of 423" ✅
+- "Webhook handler tested: subscription.created event → DB row created with correct stripe_id" ✅
+- "Test suite verifies: count reconciliation (Rails vs CB), sample data integrity (10 random records), foreign key relationships" ✅
+
+#### 2. Coverage-Oriented (Scope Creep)
+
+The agent expands beyond the scoped work, adding "improvements" not in the bead.
+
+**BAD Examples:**
+
+- "Also refactored the auth system while migrating users" ❌
+- "Added 5 new features to the video player during migration" ❌
+- "Rewrote the entire query layer for better performance" ❌
+
+**GOOD Examples:**
+
+- "Migrated exactly 699K users as scoped. Found performance issue, created bead `perf-x` for later" ✅
+- "Webhook handler implements spec, no extras. Logged enhancement ideas in bead `enh-y`" ✅
+- "Video player ported as-is. Modernization deferred to bead `mod-z`" ✅
+
+### The Mantra
+
+**"Not 'it runs' but 'it produces correct results'"**
+
+Every completed bead should include evidence that the work **achieved its intended outcome**, not just that code executed without errors.
+
+---
+
+### Assessment Evidence Patterns
+
+Use these patterns to verify your work. Include evidence in the bead close reason.
+
+#### For Data Migrations
+
+**Evidence Required:**
+
+1. **Count reconciliation** - Source count = Target count
+2. **Sample verification** - 10 random records match field-by-field
+3. **Relationship integrity** - Foreign keys resolve correctly
+4. **Idempotency check** - Re-running doesn't duplicate or break
+
+**Verification Queries:**
+
+```sql
+-- 1. Count Reconciliation
+SELECT
+  (SELECT COUNT(*) FROM rails_source_table) as source_count,
+  (SELECT COUNT(*) FROM cb_target_table) as target_count,
+  (SELECT COUNT(*) FROM rails_source_table) = (SELECT COUNT(*) FROM cb_target_table) as counts_match;
+
+-- 2. Sample Verification (spot check 10 random records)
+SELECT
+  s.id as source_id,
+  t.id as target_id,
+  s.name = t.name as name_matches,
+  s.email = t.email as email_matches,
+  s.created_at as source_created,
+  t.createdAt as target_created
+FROM rails_source_table s
+JOIN cb_target_table t ON s.id = t.rails_id
+ORDER BY RANDOM()
+LIMIT 10;
+
+-- 3. Relationship Integrity (e.g., lessons → courses)
+SELECT
+  COUNT(*) as orphaned_lessons
+FROM cb_lessons l
+LEFT JOIN cb_courses c ON l.courseId = c.id
+WHERE l.courseId IS NOT NULL AND c.id IS NULL;
+-- Should return 0
+
+-- 4. Idempotency Check (run migration twice, count shouldn't double)
+SELECT COUNT(*) FROM cb_target_table;
+-- Run migration again
+SELECT COUNT(*) FROM cb_target_table;
+-- Counts should be identical
+```
+
+**Bead Close Example:**
+
+```
+beads_close(
+  id="migrate-egghead-phase-1.2",
+  reason="User migration complete. Evidence: 699,234 users migrated (matches Rails count), 10 random samples verified (name, email, created_at match), 0 orphaned records, idempotent (re-run produced no duplicates)"
+)
+```
+
+#### For Webhook Handlers
+
+**Evidence Required:**
+
+1. **Event processing** - Handler receives event and processes it
+2. **Database effect** - Correct DB row created/updated
+3. **Idempotency** - Duplicate events don't cause duplicate records
+4. **Error handling** - Invalid events return appropriate errors
+
+**Verification Code:**
+
+```typescript
+// 1. Event Processing
+const testEvent = createTestStripeEvent("customer.subscription.created", {
+  id: "sub_test123",
+  customer: "cus_test456",
+  status: "active",
+});
+
+const result = await handler(testEvent);
+expect(result.status).toBe("processed");
+
+// 2. Database Effect
+const subscription = await db.subscription.findByStripeId("sub_test123");
+expect(subscription).toBeDefined();
+expect(subscription.customerId).toBe("cus_test456");
+expect(subscription.status).toBe("active");
+
+// 3. Idempotency
+await handler(testEvent); // Process again
+const subCount = await db.subscription.count({
+  where: { stripeId: "sub_test123" },
+});
+expect(subCount).toBe(1); // Still only 1 record
+
+// 4. Error Handling
+const invalidEvent = createTestStripeEvent("invalid.event", {});
+await expect(handler(invalidEvent)).rejects.toThrow("Unhandled event type");
+```
+
+**Bead Close Example:**
+
+```
+beads_close(
+  id="migrate-egghead-phase-2.3",
+  reason="Stripe subscription.created handler complete. Evidence: test event processed successfully, DB row created with correct stripe_id and status, idempotent (duplicate event didn't create duplicate row), invalid events return 400 error"
+)
+```
+
+#### For UI Components
+
+**Evidence Required:**
+
+1. **Visual rendering** - Component displays correctly
+2. **User interaction** - Click/type/navigation works
+3. **Data loading** - Correct data fetched and displayed
+4. **Error states** - Graceful handling of failures
+
+**Verification Code:**
+
+```typescript
+// 1. Visual Rendering
+await page.goto("/courses/test-course-slug");
+await expect(page.locator("h1")).toContainText("Test Course Title");
+await expect(page.locator('[data-testid="course-lessons"]')).toBeVisible();
+
+// 2. User Interaction
+await page.click('[data-testid="lesson-1"]');
+await expect(page).toHaveURL("/lessons/lesson-1-slug");
+await page.click('[data-testid="play-button"]');
+await expect(page.locator("video")).toHaveAttribute("data-playing", "true");
+
+// 3. Data Loading
+const lessonCount = await page.locator('[data-testid="lesson-item"]').count();
+expect(lessonCount).toBe(12); // Expected lesson count for this course
+
+// 4. Error States
+await page.goto("/courses/nonexistent-slug");
+await expect(page.locator('[data-testid="error-message"]')).toContainText(
+  "Course not found",
+);
+```
+
+**Bead Close Example:**
+
+```
+beads_close(
+  id="migrate-egghead-phase-5.1",
+  reason="Video player component complete. Evidence: player renders on /lessons/:slug, play/pause buttons work, video HLS stream loads from Mux, progress tracking updates on pause, error state shows for invalid lesson IDs"
+)
+```
+
+#### For Inngest Functions (Cron Jobs)
+
+**Evidence Required:**
+
+1. **Scheduled execution** - Function runs on schedule
+2. **Batch processing** - Processes expected number of records
+3. **Retry behavior** - Failures retry with backoff
+4. **Completion tracking** - Success/failure logged
+
+**Verification Code:**
+
+```typescript
+// 1. Scheduled Execution
+const result = await inngest.send({
+  name: "scheduled/sync-subscriptions",
+  data: {},
+});
+expect(result.status).toBe("success");
+
+// 2. Batch Processing
+const processedCount = await db.subscription.count({
+  where: { lastSyncedAt: { gte: new Date(Date.now() - 60000) } },
+});
+expect(processedCount).toBe(3335); // Expected active subscription count
+
+// 3. Retry Behavior (simulate failure)
+// Mock external API to fail
+mockStripeAPI.mockRejectedValueOnce(new Error("Network error"));
+const retryResult = await inngest.send({
+  name: "scheduled/sync-subscriptions",
+  data: {},
+});
+// Check retry was scheduled
+expect(retryResult.retryCount).toBe(1);
+
+// 4. Completion Tracking
+const logs = await db.jobLog.findMany({
+  where: { jobName: "sync-subscriptions" },
+  orderBy: { createdAt: "desc" },
+  take: 1,
+});
+expect(logs[0].status).toBe("completed");
+expect(logs[0].processedCount).toBe(3335);
+```
+
+**Bead Close Example:**
+
+```
+beads_close(
+  id="migrate-egghead-phase-3.2",
+  reason="Subscription sync cron job complete. Evidence: runs every 5min (tested with manual trigger), processes 3,335 active subscriptions, retries 3x on failure with exponential backoff, logs success/failure to job_logs table"
+)
+```
+
+---
+
+### Verification Checklist
+
+Before closing ANY bead, ask:
+
+- [ ] **Did I verify the outcome?** Not "script ran" but "correct data exists"
+- [ ] **Did I check counts?** Source vs target reconciliation
+- [ ] **Did I spot-check samples?** 10 random records field-by-field
+- [ ] **Did I test idempotency?** Re-running doesn't break things
+- [ ] **Did I include evidence in close reason?** Specific numbers, not vague statements
+- [ ] **Did I stay in scope?** No feature creep, defer enhancements to new beads
+
+### Red Flags (DON'T Do This)
+
+❌ Closing with "Done" or "Completed" (no evidence)  
+❌ "Tests pass" without saying what they verify  
+❌ "Migration successful" without count reconciliation  
+❌ "No errors" as the only evidence  
+❌ Adding features not in the bead scope  
+❌ Refactoring unrelated code "while you're in there"
+
+### Green Flags (DO This)
+
+✅ Close reason includes specific counts and verification queries  
+✅ Evidence shows source/target reconciliation  
+✅ Idempotency verified by re-running  
+✅ Sample spot-checks included (10 random records)  
+✅ Scope strictly adhered to, enhancements deferred to new beads  
+✅ Verification queries saved in comments for future reference
 
 ---
 
