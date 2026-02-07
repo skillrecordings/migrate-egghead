@@ -62,6 +62,13 @@ bun tools/me.ts analysis full --json | jq .
 # Include deltas vs previous same-length window (helps track progress)
 bun tools/me.ts analysis full --json --compare | jq .
 
+# Post a tight markdown summary onto an issue (idempotent by time-window marker)
+# Use repo:num (preferred) to avoid '#' comment issues in some runners.
+bun tools/me.ts analysis full --json --compare --comment migrate-egghead:21 | jq '.comment.results'
+
+# Preview comment actions without mutating GitHub state
+bun tools/me.ts analysis full --json --compare --comment migrate-egghead:21 --dry-run | jq '.comment.results'
+
 # Cursor ops
 bun tools/me.ts cursor show --json | jq .
 bun tools/me.ts cursor clear

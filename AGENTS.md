@@ -590,6 +590,9 @@ bun tools/me.ts analysis full --json | jq .
 # Include deltas vs the previous same-length window
 bun tools/me.ts analysis full --json --compare | jq .
 
+# Post a tight markdown summary onto an issue (idempotent by time-window marker)
+bun tools/me.ts analysis full --json --compare --comment migrate-egghead:21 | jq '.comment.results'
+
 # Cursor ops (optional)
 bun tools/me.ts cursor show --json | jq .
 bun tools/me.ts cursor clear

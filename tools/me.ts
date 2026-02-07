@@ -99,7 +99,7 @@ Global options:
 Commands:
   check
   sync
-  analysis full [--compare] [--advance] [--no-advance]
+  analysis full [--compare] [--comment <issueRef>] [--advance] [--no-advance]
   cursor show
   cursor set <iso>
   cursor clear
@@ -1036,10 +1036,224 @@ function diffNumber(now: unknown, prev: unknown): { now: number | null; prev: nu
   return { now: nn, prev: pp, delta: d };
 }
 
+type AnalysisFullArgs = {
+  compare: boolean;
+  advance: boolean;
+  noAdvance: boolean;
+  commentRefs: string[];
+};
+
+function parseAnalysisFullArgs(args: string[]): AnalysisFullArgs {
+  const res: AnalysisFullArgs = {
+    compare: false,
+    advance: false,
+    noAdvance: false,
+    commentRefs: [],
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--compare") {
+      res.compare = true;
+      continue;
+    }
+    if (a === "--advance") {
+      res.advance = true;
+      continue;
+    }
+    if (a === "--no-advance") {
+      res.noAdvance = true;
+      continue;
+    }
+    if (a === "--comment") {
+      const ref = args[++i];
+      if (!ref || ref.startsWith("-")) die("analysis full --comment: missing <issueRef> (use repo:num or full URL)");
+      res.commentRefs.push(ref);
+      continue;
+    }
+  }
+
+  return res;
+}
+
+function parseGitHubIssueUrl(issueUrl: string): { owner: string; repo: string; number: number } {
+  let u: URL;
+  try {
+    u = new URL(issueUrl);
+  } catch {
+    die(`Invalid GitHub URL: ${issueUrl}`);
+  }
+
+  const parts = u.pathname.split("/").filter(Boolean);
+  // /{owner}/{repo}/issues/{n} or /{owner}/{repo}/pull/{n}
+  if (parts.length < 4) die(`Unsupported GitHub issue URL: ${issueUrl}`);
+  const [owner, repo, kind, num] = parts;
+  if (kind !== "issues" && kind !== "pull") die(`Unsupported GitHub URL type (expected issues/pull): ${issueUrl}`);
+  const n = Number(num);
+  if (!Number.isFinite(n) || n <= 0) die(`Unsupported GitHub issue URL (bad number): ${issueUrl}`);
+  return { owner, repo, number: n };
+}
+
+function formatPct(n: unknown, digits = 1): string {
+  const v = typeof n === "number" ? n : n == null ? NaN : Number(n);
+  if (!Number.isFinite(v)) return "?";
+  return `${v.toFixed(digits)}%`;
+}
+
+function formatMs(n: unknown): string {
+  const v = typeof n === "number" ? n : n == null ? NaN : Number(n);
+  if (!Number.isFinite(v)) return "?";
+  return `${Math.round(v)}ms`;
+}
+
+function formatCount(n: unknown): string {
+  const v = typeof n === "number" ? n : n == null ? NaN : Number(n);
+  if (!Number.isFinite(v)) return "?";
+  return v.toLocaleString();
+}
+
+function pickTop<T>(arr: T[] | undefined, n: number): T[] {
+  return Array.isArray(arr) ? arr.slice(0, n) : [];
+}
+
+function buildAnalysisMarker(tr: EffectiveTimeRange, compare: boolean): string {
+  // Cursor runs advance `since` on each successful run, so `since` alone is a stable idempotency key.
+  // (Avoid spamming comments because `until=now` changes every run.)
+  if (tr.source === "cursor") {
+    return `<!-- migrate-egghead:analysis-full since=${tr.since} compare=${compare ? "1" : "0"} -->`;
+  }
+  return `<!-- migrate-egghead:analysis-full since=${tr.since} until=${tr.until} compare=${compare ? "1" : "0"} -->`;
+}
+
+function buildAnalysisCommentBody(analysis: any, marker: string): string {
+  const tr = analysis?.timeRange as EffectiveTimeRange;
+  const frontend = analysis?.frontend?.data ?? {};
+  const backendDash = analysis?.backend?.dashboard?.data ?? {};
+  const backendErrors = analysis?.backend?.errors?.data ?? {};
+  const story = analysis?.story ?? {};
+  const compare = analysis?.compare ?? null;
+
+  const cache = frontend.cache ?? {};
+  const topRoutes = pickTop(frontend.routes, 6).map((r: any) => `${r.route} (${formatCount(r.count)})`).join(", ");
+  const top500 = pickTop(frontend.errors, 6).map((r: any) => `${r.route} (${formatCount(r.count)})`).join(", ");
+
+  const byEvent = storyByEvent(story);
+  const lesson = byEvent["lesson.loadLesson.summary"];
+  const lessonGql = byEvent["lesson.loadLessonMetadataFromGraphQL.graphql"];
+  const courseRes = byEvent["course.loadResourcesForCourse.summary"];
+
+  const gqlErr = story.lessonGraphqlErrorStats ?? {};
+  const gqlSlugs = pickTop(story.lessonGraphqlErrorSlugs, 5)
+    .map((s: any) => `${s.slug} (${formatCount(s.errors)})`)
+    .join(", ");
+
+  const lines: string[] = [];
+  lines.push(marker);
+  lines.push("");
+  lines.push("## Agent Report: Analysis Full");
+  lines.push("");
+  lines.push(`**Window:** \`${tr.since}\` -> \`${tr.until}\` (\`${tr.hours.toFixed(2)}h\`, source=\`${tr.source}\`)`);
+  lines.push("");
+  lines.push("### Frontend (Vercel)");
+  lines.push(`- Cache: hitRate=${cache.hitRate ?? "?"}% missRate=${cache.missRate ?? "?"}% (hits=${formatCount(cache.hits)} misses=${formatCount(cache.misses)})`);
+  lines.push(`- 500s top routes: ${top500 || "(none)"}`);
+  lines.push(`- Top routes: ${topRoutes || "(unknown)"}`);
+  lines.push("");
+  lines.push("### Structured Story (Lambda JSON Events)");
+  lines.push(`- Structured coverage: ${formatPct(story?.coverage?.structured_pct, 1)} (${formatCount(story?.coverage?.structured)}/${formatCount(story?.coverage?.total)})`);
+  lines.push(`- Search SSR cache: hit_rate=${formatPct(story?.searchCache?.hit_rate, 2)} (hit=${formatCount(story?.searchCache?.hits)} miss=${formatCount(story?.searchCache?.misses)})`);
+  lines.push(`- tRPC feature-flag tax: ${formatPct(story?.trpcTax?.feature_flag_pct, 1)} (${formatCount(story?.trpcTax?.feature_flag)}/${formatCount(story?.trpcTax?.total)})`);
+  if (lesson) lines.push(`- lesson.loadLesson.summary: calls=${formatCount(lesson.calls)} avg=${formatMs(lesson.avg_ms)} p95=${formatMs(lesson.p95_ms)}`);
+  if (lessonGql) lines.push(`- lesson.loadLessonMetadataFromGraphQL.graphql: calls=${formatCount(lessonGql.calls)} avg=${formatMs(lessonGql.avg_ms)} p95=${formatMs(lessonGql.p95_ms)} errors=${formatCount(lessonGql.errors)}`);
+  if (courseRes) lines.push(`- course.loadResourcesForCourse.summary: calls=${formatCount(courseRes.calls)} avg=${formatMs(courseRes.avg_ms)} p95=${formatMs(courseRes.p95_ms)}`);
+  lines.push(`- GraphQL lesson metadata errors: total=${formatCount(gqlErr.total_errors)} 404=${formatCount(gqlErr.errors_404)} other=${formatCount(gqlErr.errors_other)}`);
+  if (gqlSlugs) lines.push(`- Worst GraphQL slugs: ${gqlSlugs}`);
+  lines.push("");
+  lines.push("### Backend (Rails)");
+  lines.push(`- totalEvents=${formatCount(backendDash.totalEvents)} activeWorkers=${formatCount(backendDash.activeWorkers)} errorTypes=${formatCount(backendDash.errorTypes)}`);
+  const topErrRows = pickTop(backendErrors.rows, 5)
+    .map((r: any) => `${r.group?.["unknown.event"] ?? "?"} ${r.group?.["unknown.error_class"] ?? "?"} (${formatCount(r.count)})`)
+    .join(", ");
+  if (topErrRows) lines.push(`- Top errors: ${topErrRows}`);
+
+  if (compare?.deltas) {
+    lines.push("");
+    lines.push("### Deltas (Previous Window)");
+    lines.push(`- Structured coverage delta: ${formatPct(compare.deltas.structured_pct?.delta, 2)}`);
+    lines.push(`- Search hit_rate delta: ${formatPct(compare.deltas.search_hit_rate?.delta, 2)}`);
+    lines.push(`- tRPC feature-flag pct delta: ${formatPct(compare.deltas.trpc_feature_flag_pct?.delta, 2)}`);
+  }
+
+  // Keep it tight and deterministic.
+  lines.push("");
+  lines.push("_Generated by `bun tools/me.ts analysis full` (agent-only)._");
+  lines.push("");
+  return lines.join("\n");
+}
+
+type CommentResult = {
+  issueUrl: string;
+  marker: string;
+  skipped: boolean;
+  posted: boolean;
+  reason?: string;
+  commentUrl?: string;
+  commentId?: number;
+  error?: string;
+};
+
+async function ensureIssueComment(opts: GlobalOpts, issueUrl: string, marker: string, body: string): Promise<CommentResult> {
+  const { owner, repo, number } = parseGitHubIssueUrl(issueUrl);
+
+  const list = await run(["gh", "api", `repos/${owner}/${repo}/issues/${number}/comments?per_page=100`], { quiet: true });
+  if (list.exitCode !== 0) {
+    return { issueUrl, marker, skipped: false, posted: false, error: (list.stderr || list.stdout || "gh api failed").trim() };
+  }
+  const comments = safeJsonParse<any[]>(list.stdout, "gh api issue comments");
+  const already = comments.some(c => typeof c?.body === "string" && c.body.includes(marker));
+  if (already) {
+    return { issueUrl, marker, skipped: true, posted: false, reason: "marker already present in recent comments" };
+  }
+
+  if (opts.dryRun) {
+    return { issueUrl, marker, skipped: false, posted: false, reason: "dry-run" };
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "me-analysis-comment-"));
+  const bodyPath = path.join(tmpDir, "body.md");
+  try {
+    fs.writeFileSync(bodyPath, body, "utf8");
+    const post = await run(
+      ["gh", "api", `repos/${owner}/${repo}/issues/${number}/comments`, "-F", `body=@${bodyPath}`],
+      { quiet: true },
+    );
+    if (post.exitCode !== 0) {
+      return { issueUrl, marker, skipped: false, posted: false, error: (post.stderr || post.stdout || "gh api post failed").trim() };
+    }
+    const created = safeJsonParse<any>(post.stdout, "gh api post issue comment");
+    return {
+      issueUrl,
+      marker,
+      skipped: false,
+      posted: true,
+      commentUrl: created.html_url,
+      commentId: created.id,
+    };
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
 async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> {
-  const compare = args.includes("--compare");
-  const advanceFlag = args.includes("--advance");
-  const noAdvanceFlag = args.includes("--no-advance");
+  const parsedArgs = parseAnalysisFullArgs(args);
+  const compare = parsedArgs.compare;
+  const advanceFlag = parsedArgs.advance;
+  const noAdvanceFlag = parsedArgs.noAdvance;
+  const commentRefs = parsedArgs.commentRefs;
 
   const tr = getEffectiveTimeRange(opts);
   const shouldAdvance = noAdvanceFlag ? false : advanceFlag ? true : tr.source !== "explicit";
@@ -1106,6 +1320,20 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
     gh: { graphqlRate: ghRateJson },
   };
 
+  let commentResults: CommentResult[] = [];
+  if (commentRefs.length > 0) {
+    const marker = buildAnalysisMarker(tr, compare);
+    const body = buildAnalysisCommentBody(result, marker);
+    const issueUrls = commentRefs.map(ref => toIssueUrl(opts.owner, ref));
+    commentResults = await Promise.all(issueUrls.map(u => ensureIssueComment(opts, u, marker, body)));
+    (result as any).comment = {
+      marker,
+      targets: issueUrls,
+      results: commentResults,
+      dryRun: opts.dryRun,
+    };
+  }
+
   if (shouldAdvance) {
     writeCursor({
       version: 1,
@@ -1132,6 +1360,18 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
   console.log(
     `search hit_rate=${story?.searchCache?.hit_rate?.toFixed?.(2) ?? "?"}% trpc feature_flag_pct=${story?.trpcTax?.feature_flag_pct?.toFixed?.(1) ?? "?"}%`,
   );
+
+  if (commentResults.length > 0) {
+    const posted = commentResults.filter(r => r.posted).length;
+    const skipped = commentResults.filter(r => r.skipped).length;
+    const errored = commentResults.filter(r => r.error).length;
+    console.log(`comments: posted=${posted} skipped=${skipped} errors=${errored}`);
+    for (const r of commentResults) {
+      if (r.posted) console.log(`- posted: ${r.commentUrl ?? r.issueUrl}`);
+      else if (r.skipped) console.log(`- skipped: ${r.issueUrl} (${r.reason ?? "already"})`);
+      else if (r.error) console.log(`- error: ${r.issueUrl} (${r.error})`);
+    }
+  }
 }
 
 async function cmdCursorShow(opts: GlobalOpts): Promise<void> {
