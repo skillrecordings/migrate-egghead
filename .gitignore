@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# OS/editor noise
+.DS_Store
+
+# Agent/ops noise
+.opencode/swarm.db
+.opencode/streams/*.pid
+.claude/.worker-tracking/
+

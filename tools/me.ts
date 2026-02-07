@@ -12,10 +12,16 @@
  */
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
 type OutputFormat = "text" | "json";
+
+const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
+
+type ZodModule = typeof import("zod");
+type ZodSchema<T> = { safeParse: (input: unknown) => { success: true; data: T } | { success: false; error: any } };
 
 type GlobalOpts = {
   owner: string;
@@ -45,6 +51,9 @@ const CURSOR_MAX_HOURS = Number(process.env.ME_CURSOR_MAX_HOURS ?? "168"); // 7d
 
 const DEFAULT_REPOS = ["migrate-egghead", "egghead-next", "egghead-rails"] as const;
 
+const WORKER_OUTPUT_SCHEMA_PATH =
+  process.env.ME_WORKER_OUTPUT_SCHEMA ?? path.join(SCRIPT_DIR, "worker_output.schema.json");
+
 const PROJECT_SYNC_URLS: string[] = [
   // migrate-egghead coordination issues
   "https://github.com/skillrecordings/migrate-egghead/issues/21",
@@ -73,6 +82,33 @@ const PROJECT_SYNC_URLS: string[] = [
 
 function isTty(): boolean {
   return Boolean(process.stdout.isTTY);
+}
+
+let _zod: ZodModule | null = null;
+function hasZod(): boolean {
+  const require = createRequire(import.meta.url);
+  try {
+    require.resolve("zod");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getZod(): ZodModule {
+  if (_zod) return _zod;
+  const require = createRequire(import.meta.url);
+  try {
+    _zod = require("zod") as ZodModule;
+    return _zod;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    die(
+      `Missing dependency: zod\n` +
+        `- Error: ${msg}\n` +
+        `Fix: run \`bun install\` in repo root\n`,
+    );
+  }
 }
 
 function die(message: string, code = 1): never {
@@ -111,6 +147,7 @@ Commands:
   project status <ref> <Todo|In Progress|Done>
   logs story
   logs trace <request_id>
+  workers run <issueRef...> [--max-parallel <n>]
 
 Refs:
   - Full URL: https://github.com/skillrecordings/egghead-next/issues/1561
@@ -236,22 +273,288 @@ function safeJsonParse<T>(text: string, context: string): T {
   }
 }
 
+function formatZodIssues(issues: any[], max = 6): string {
+  const list = Array.isArray(issues) ? issues.slice(0, max) : [];
+  return list
+    .map((i: any) => {
+      const path = Array.isArray(i?.path) && i.path.length ? i.path.join(".") : "(root)";
+      const msg = i?.message ? String(i.message) : "invalid";
+      return `${path}: ${msg}`;
+    })
+    .join("\n");
+}
+
+function safeJsonParseZod<T>(text: string, schema: ZodSchema<T>, context: string): T {
+  const json = safeJsonParse<unknown>(text, context);
+  const r = schema.safeParse(json);
+  if (!r.success) {
+    const issues = r.error?.issues ?? [];
+    const details = formatZodIssues(issues);
+    throw new Error(
+      `Failed to validate JSON shape (${context}).\n` +
+        (details ? `Issues:\n${details}\n` : "") +
+        `Hint: upstream output shape likely changed.\n`,
+    );
+  }
+  return r.data;
+}
+
 type AnalysisCursor = {
   version: 1;
-  updatedAt: string;
+  updatedAt?: string;
   lastSince?: string;
   lastUntil: string;
 };
+
+type Schemas = ReturnType<typeof buildSchemas>;
+let _schemas: Schemas | null = null;
+
+function buildSchemas() {
+  const { z } = getZod();
+  const DateTime = z
+    .string()
+    .refine(v => Number.isFinite(Date.parse(v)), { message: "Invalid datetime (expected ISO 8601-ish)" });
+
+  const AnalysisCursorSchema = z
+    .object({
+      version: z.literal(1),
+      updatedAt: DateTime.optional(),
+      lastSince: DateTime.optional(),
+      lastUntil: DateTime,
+    })
+    .passthrough();
+
+  const ProjectCacheSchema = z
+    .object({
+      owner: z.string(),
+      projectNumber: z.number(),
+      projectId: z.string(),
+      projectUrl: z.string(),
+      projectTitle: z.string(),
+      statusFieldId: z.string(),
+      statusOptions: z.record(z.string(), z.string()),
+      fetchedAt: DateTime,
+    })
+    .passthrough();
+
+  const GitHubIssueApiSchema = z
+    .object({
+      url: z.string(),
+      title: z.string(),
+      body: z.string(),
+      updatedAt: z.string().optional(),
+      labels: z.array(z.string()).optional(),
+    })
+    .passthrough();
+
+  const GitHubProjectInfoSchema = z
+    .object({
+      id: z.string(),
+      url: z.string(),
+      title: z.string(),
+    })
+    .passthrough();
+
+  const GitHubProjectItemSchema = z
+    .object({
+      id: z.string(),
+      status: z.string().optional(),
+      title: z.string().optional(),
+      repository: z.string().optional(),
+      labels: z.array(z.string()).optional(),
+      content: z
+        .object({
+          url: z.string().optional(),
+          title: z.string().optional(),
+        })
+        .passthrough()
+        .optional(),
+    })
+    .passthrough();
+
+  const GitHubProjectItemListSchema = z
+    .object({
+      items: z.array(GitHubProjectItemSchema),
+    })
+    .passthrough();
+
+  const GitHubProjectFieldSchema = z
+    .object({
+      name: z.string(),
+      id: z.string(),
+      options: z
+        .array(
+          z
+            .object({
+              name: z.string(),
+              id: z.string(),
+            })
+            .passthrough(),
+        )
+        .optional(),
+    })
+    .passthrough();
+
+  const GitHubProjectFieldListSchema = z
+    .object({
+      fields: z.array(GitHubProjectFieldSchema),
+    })
+    .passthrough();
+
+  const LogBeastMetaSchema = z
+    .object({
+      command: z.string().optional(),
+      hours: z.number().optional(),
+      since: z.string().optional(),
+      until: z.string().optional(),
+    })
+    .passthrough();
+
+  const LogBeastGenericSchema = z
+    .object({
+      meta: LogBeastMetaSchema.optional(),
+      data: z.unknown(),
+    })
+    .passthrough();
+
+  const LogBeastRawSchema = z
+    .object({
+      meta: LogBeastMetaSchema.optional(),
+      data: z
+        .object({
+          apl: z.string(),
+          result: z.unknown(),
+        })
+        .passthrough(),
+    })
+    .passthrough();
+
+  const LogBeastFrontendSchema = z
+    .object({
+      meta: LogBeastMetaSchema.optional(),
+      data: z
+        .object({
+          total: z.number(),
+          statusCodes: z
+            .array(
+              z
+                .object({
+                  status: z.number().nullable().optional(),
+                  count: z.number(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+          cache: z
+            .object({
+              hits: z.number(),
+              misses: z.number(),
+              stale: z.number().optional(),
+              hitRate: z.union([z.string(), z.number()]).optional(),
+              missRate: z.union([z.string(), z.number()]).optional(),
+            })
+            .passthrough()
+            .optional(),
+          sources: z
+            .array(
+              z
+                .object({
+                  source: z.string().nullable().optional(),
+                  count: z.number(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+          routes: z
+            .array(
+              z
+                .object({
+                  route: z.string(),
+                  count: z.number(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+          errors: z
+            .array(
+              z
+                .object({
+                  route: z.string(),
+                  count: z.number(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+        })
+        .passthrough(),
+    })
+    .passthrough();
+
+  const LogBeastDashboardSchema = z
+    .object({
+      meta: LogBeastMetaSchema.optional(),
+      data: z
+        .object({
+          totalEvents: z.number(),
+          errorTypes: z.number(),
+          activeWorkers: z.number(),
+        })
+        .passthrough(),
+    })
+    .passthrough();
+
+  const LogBeastErrorsSchema = z
+    .object({
+      meta: LogBeastMetaSchema.optional(),
+      data: z
+        .object({
+          rows: z.array(
+            z
+              .object({
+                group: z.record(z.string(), z.unknown()).optional(),
+                count: z.number(),
+              })
+              .passthrough(),
+          ),
+        })
+        .passthrough(),
+    })
+    .passthrough();
+
+  return {
+    DateTime,
+    AnalysisCursorSchema,
+    ProjectCacheSchema,
+    GitHubIssueApiSchema,
+    GitHubProjectInfoSchema,
+    GitHubProjectItemListSchema,
+    GitHubProjectFieldListSchema,
+    LogBeastMetaSchema,
+    LogBeastGenericSchema,
+    LogBeastRawSchema,
+    LogBeastFrontendSchema,
+    LogBeastDashboardSchema,
+    LogBeastErrorsSchema,
+  };
+}
+
+function getSchemas(): Schemas {
+  if (_schemas) return _schemas;
+  _schemas = buildSchemas();
+  return _schemas;
+}
 
 function readCursor(): AnalysisCursor | null {
   try {
     if (!fs.existsSync(CURSOR_CACHE_PATH)) return null;
     const raw = fs.readFileSync(CURSOR_CACHE_PATH, "utf8");
-    const json = JSON.parse(raw) as AnalysisCursor;
-    if (json?.version !== 1) return null;
-    if (!json.lastUntil) return null;
-    if (!Number.isFinite(Date.parse(json.lastUntil))) return null;
-    return json;
+    const { AnalysisCursorSchema } = getSchemas();
+    const parsed = AnalysisCursorSchema.safeParse(safeJsonParse<unknown>(raw, "cursor"));
+    if (!parsed.success) return null;
+    if (!parsed.data.updatedAt) {
+      return { ...parsed.data, updatedAt: new Date().toISOString() } as AnalysisCursor;
+    }
+    return parsed.data as AnalysisCursor;
   } catch {
     return null;
   }
@@ -424,8 +727,16 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
 
   const hasLogBeast = fs.existsSync(LOG_BEAST_CLI);
   const hasAxiomToken = Boolean(process.env.AGENT_AXIOM_TOKEN);
+  const hasZodDep = hasZod();
 
-  const ok = gh.exitCode === 0 && hasProjectScope && hasRepoScope && hasReadOrgScope && hasLogBeast && hasAxiomToken;
+  const ok =
+    gh.exitCode === 0 &&
+    hasProjectScope &&
+    hasRepoScope &&
+    hasReadOrgScope &&
+    hasLogBeast &&
+    hasAxiomToken &&
+    hasZodDep;
 
   const data = {
     ok,
@@ -445,6 +756,9 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
     env: {
       AGENT_AXIOM_TOKEN: hasAxiomToken,
     },
+    deps: {
+      zod: hasZodDep,
+    },
   };
 
   if (opts.format === "json") {
@@ -455,6 +769,7 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
   console.log(`gh scopes: ${scopes.join(", ") || "(unknown)"}`);
   console.log(`log-beast cli: ${hasLogBeast ? "ok" : "missing"} (${LOG_BEAST_CLI})`);
   console.log(`AGENT_AXIOM_TOKEN: ${hasAxiomToken ? "set" : "missing"}`);
+  console.log(`zod: ${hasZodDep ? "ok" : "missing"} (run \`bun install\`)`);
   if (!ok) process.exit(2);
 }
 
@@ -634,8 +949,9 @@ async function getProjectInfo(opts: GlobalOpts): Promise<ProjectInfo> {
   if (r.exitCode !== 0) {
     die(`Failed to read org project (check gh scopes)\n${(r.stderr || r.stdout || "").trim()}`);
   }
-  const json = safeJsonParse<any>(r.stdout, "gh project view");
-  return { id: json.id, url: json.url, title: json.title };
+  const { GitHubProjectInfoSchema } = getSchemas();
+  const json = safeJsonParseZod<any>(r.stdout, GitHubProjectInfoSchema, "gh project view");
+  return { id: String(json.id), url: String(json.url), title: String(json.title) };
 }
 
 type StatusField = {
@@ -660,7 +976,8 @@ async function getProjectItems(opts: GlobalOpts): Promise<ProjectItem[]> {
   if (r.exitCode !== 0) {
     die(`Failed to list project items\n${(r.stderr || r.stdout || "").trim()}`);
   }
-  const json = safeJsonParse<any>(r.stdout, "gh project item-list");
+  const { GitHubProjectItemListSchema } = getSchemas();
+  const json = safeJsonParseZod<any>(r.stdout, GitHubProjectItemListSchema, "gh project item-list");
   return (json.items ?? []).map((it: any) => ({
     id: it.id,
     status: it.status,
@@ -679,7 +996,8 @@ async function getStatusField(opts: GlobalOpts): Promise<StatusField> {
   if (r.exitCode !== 0) {
     die(`Failed to list project fields\n${(r.stderr || r.stdout || "").trim()}`);
   }
-  const json = safeJsonParse<any>(r.stdout, "gh project field-list");
+  const { GitHubProjectFieldListSchema } = getSchemas();
+  const json = safeJsonParseZod<any>(r.stdout, GitHubProjectFieldListSchema, "gh project field-list");
   const status = (json.fields ?? []).find((f: any) => f.name === "Status");
   if (!status) die('Project is missing required field "Status"');
   if (!Array.isArray(status.options)) die('Project "Status" field missing options');
@@ -709,7 +1027,10 @@ function readProjectCache(opts: GlobalOpts): ProjectCache | null {
   const p = getProjectCachePath(opts);
   if (!fs.existsSync(p)) return null;
   try {
-    return JSON.parse(fs.readFileSync(p, "utf8")) as ProjectCache;
+    const raw = fs.readFileSync(p, "utf8");
+    const { ProjectCacheSchema } = getSchemas();
+    const parsed = ProjectCacheSchema.safeParse(safeJsonParse<unknown>(raw, "project cache"));
+    return parsed.success ? (parsed.data as ProjectCache) : null;
   } catch {
     return null;
   }
@@ -723,6 +1044,292 @@ function isProjectCacheFresh(cache: ProjectCache): boolean {
 
 function writeProjectCache(opts: GlobalOpts, cache: ProjectCache): void {
   atomicWriteFileSync(getProjectCachePath(opts), JSON.stringify(cache, null, 2));
+}
+
+type WorkerRunArgs = {
+  maxParallel: number;
+};
+
+function parseWorkersRunArgs(args: string[]): { workerArgs: WorkerRunArgs; refs: string[] } {
+  const workerArgs: WorkerRunArgs = { maxParallel: 2 };
+  const refs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--max-parallel") {
+      const v = args[++i];
+      if (!v) die("workers run --max-parallel: missing value");
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) die(`workers run --max-parallel: invalid number: ${v}`);
+      workerArgs.maxParallel = Math.min(16, Math.floor(n));
+      continue;
+    }
+    refs.push(a);
+  }
+
+  return { workerArgs, refs };
+}
+
+type GitHubIssue = {
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  body: string;
+  updatedAt?: string;
+  labels: string[];
+};
+
+async function fetchIssueByUrl(issueUrl: string): Promise<GitHubIssue> {
+  const { owner, repo, number } = parseGitHubIssueUrl(issueUrl);
+  const r = await run(
+    [
+      "gh",
+      "api",
+      `repos/${owner}/${repo}/issues/${number}`,
+      "--jq",
+      "{url: .html_url, title: .title, body: (.body // \"\"), updatedAt: .updated_at, labels: [.labels[].name]}",
+    ],
+    { quiet: true },
+  );
+  if (r.exitCode !== 0) die(`gh api issue fetch failed for ${issueUrl}\n${(r.stderr || r.stdout || "").trim()}`);
+  const { GitHubIssueApiSchema } = getSchemas();
+  const json = safeJsonParseZod<any>(r.stdout, GitHubIssueApiSchema, `gh api issue ${issueUrl}`);
+  return {
+    url: String(json.url ?? issueUrl),
+    owner,
+    repo,
+    number,
+    title: String(json.title ?? ""),
+    body: String(json.body ?? ""),
+    updatedAt: json.updatedAt ? String(json.updatedAt) : undefined,
+    labels: Array.isArray(json.labels) ? json.labels.map(String) : [],
+  };
+}
+
+function guessRepoWorkdir(rootDir: string, repo: string): string {
+  // Most work is in the submodules. Keep worker scope tight to avoid accidental wide searches.
+  const candidate = path.join(rootDir, repo);
+  if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) return candidate;
+  return rootDir;
+}
+
+function stripMarkdownNoise(text: string, maxChars: number): string {
+  const t = String(text ?? "");
+  if (t.length <= maxChars) return t;
+  return t.slice(0, maxChars) + "\n\n(truncated)";
+}
+
+function buildWorkerPrompt(issue: GitHubIssue, workdir: string): string {
+  // Keep it short and very explicit. We can't rely on swarmmail/agentmail compliance.
+  // Codex will be run with an output schema; still instruct to output JSON.
+  const body = stripMarkdownNoise(issue.body, 6000);
+  const labelStr = issue.labels.length ? issue.labels.join(", ") : "(none)";
+
+  return [
+    "You are an agent doing a read-only investigation.",
+    "",
+    "Constraints:",
+    "- Do NOT edit files.",
+    "- Prefer `rg` to locate code paths quickly.",
+    "- Be concrete: file paths, function names, and hypotheses that can be tested.",
+    "",
+    "Output:",
+    "- Return a single JSON object that matches the provided output schema.",
+    "",
+    `Working directory: ${workdir}`,
+    "",
+    "GitHub issue:",
+    `- URL: ${issue.url}`,
+    `- Title: ${issue.title}`,
+    `- Labels: ${labelStr}`,
+    "",
+    "Issue body (may be truncated):",
+    body || "(empty)",
+    "",
+    "Task:",
+    "- Identify the relevant code path(s).",
+    "- Explain the most likely root cause(s).",
+    "- Propose quick wins and the next deeper steps.",
+  ].join("\n");
+}
+
+type WorkerResult = {
+  ok: boolean;
+  issueUrl: string;
+  repo: string;
+  workdir: string;
+  durationMs: number;
+  exitCode: number;
+  outputRaw: string;
+  outputJson?: any;
+  error?: string;
+};
+
+async function runCodexWorker(prompt: string, workdir: string): Promise<{ exitCode: number; output: string; durationMs: number }> {
+  if (!fs.existsSync(WORKER_OUTPUT_SCHEMA_PATH)) {
+    die(`Missing worker output schema: ${WORKER_OUTPUT_SCHEMA_PATH}`);
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "me-worker-"));
+  const lastPath = path.join(tmpDir, "last.txt");
+
+  const started = Date.now();
+  try {
+    const cmd = [
+      "codex",
+      "exec",
+      "--sandbox",
+      "read-only",
+      "-C",
+      workdir,
+      "--output-schema",
+      WORKER_OUTPUT_SCHEMA_PATH,
+      "--output-last-message",
+      lastPath,
+      "--skip-git-repo-check",
+      "-",
+    ];
+
+    const p = Bun.spawn(cmd, {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    p.stdin.write(prompt);
+    p.stdin.end();
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+
+    // Prefer the last-message file; fall back to stdout.
+    let out = "";
+    if (fs.existsSync(lastPath)) out = fs.readFileSync(lastPath, "utf8");
+    if (!out.trim()) out = stdout;
+
+    // Include stderr if it contains anything except known noisy rollout warnings.
+    const noisy = (stderr || "")
+      .split("\n")
+      .filter(l => l.trim() && !l.includes("state db missing rollout path"))
+      .join("\n")
+      .trim();
+    if (noisy) out = out.trim() ? `${out.trim()}\n\n[stderr]\n${noisy}\n` : `[stderr]\n${noisy}\n`;
+
+    return { exitCode, output: out, durationMs: Date.now() - started };
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function cmdWorkersRun(opts: GlobalOpts, args: string[]): Promise<void> {
+  const { workerArgs, refs } = parseWorkersRunArgs(args);
+  if (refs.length === 0) die("workers run: missing <issueRef...>");
+
+  const rootDir = process.cwd();
+  const issueUrls = refs.map(r => toIssueUrl(opts.owner, r));
+
+  // Fetch issue metadata first (sequential to keep gh API usage sane).
+  const issues: GitHubIssue[] = [];
+  for (const u of issueUrls) issues.push(await fetchIssueByUrl(u));
+
+  const results: WorkerResult[] = [];
+  const queue = issues.slice();
+
+  const runOne = async (issue: GitHubIssue): Promise<WorkerResult> => {
+    const workdir = guessRepoWorkdir(rootDir, issue.repo);
+    const prompt = buildWorkerPrompt(issue, workdir);
+
+    if (opts.dryRun) {
+      return {
+        ok: true,
+        issueUrl: issue.url,
+        repo: issue.repo,
+        workdir,
+        durationMs: 0,
+        exitCode: 0,
+        outputRaw: "(dry-run: worker not executed)",
+        outputJson: { dry_run: true, issue: issue.url, workdir },
+      };
+    }
+
+    try {
+      const r = await runCodexWorker(prompt, workdir);
+      const raw = String(r.output ?? "").trim();
+      let parsed: any | undefined;
+      let ok = r.exitCode === 0;
+      let err: string | undefined;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        ok = false;
+        const msg = e instanceof Error ? e.message : String(e);
+        err = `Worker output was not valid JSON: ${msg}`;
+      }
+      return {
+        ok,
+        issueUrl: issue.url,
+        repo: issue.repo,
+        workdir,
+        durationMs: r.durationMs,
+        exitCode: r.exitCode,
+        outputRaw: raw,
+        outputJson: parsed,
+        error: err,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        issueUrl: issue.url,
+        repo: issue.repo,
+        workdir,
+        durationMs: 0,
+        exitCode: 2,
+        outputRaw: "",
+        error: msg,
+      };
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(workerArgs.maxParallel, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const issue = queue.shift();
+      if (!issue) return;
+      results.push(await runOne(issue));
+    }
+  });
+
+  await Promise.all(workers);
+
+  const out = {
+    ok: results.every(r => r.ok),
+    dryRun: opts.dryRun,
+    maxParallel: workerArgs.maxParallel,
+    schemaPath: WORKER_OUTPUT_SCHEMA_PATH,
+    count: results.length,
+    results,
+  };
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify(out));
+    process.exit(out.ok ? 0 : 2);
+  }
+
+  for (const r of results) {
+    console.log(`${r.ok ? "OK" : "FAIL"}  ${r.issueUrl}  (${r.durationMs}ms)`);
+    if (!r.ok && r.error) console.log(`  error: ${r.error}`);
+  }
+
+  process.exit(out.ok ? 0 : 2);
 }
 
 async function refreshProjectCache(opts: GlobalOpts): Promise<ProjectCache> {
@@ -883,7 +1490,8 @@ async function runLogBeastRaw(apl: string, opts: GlobalOpts): Promise<any> {
     { quiet: true },
   );
   if (r.exitCode !== 0) die(`log-beast raw failed\n${r.stderr || r.stdout}`);
-  return safeJsonParse<any>(r.stdout, "log-beast raw");
+  const { LogBeastRawSchema } = getSchemas();
+  return safeJsonParseZod<any>(r.stdout, LogBeastRawSchema, "log-beast raw");
 }
 
 async function getLogsStoryResult(opts: GlobalOpts): Promise<any> {
@@ -1021,7 +1629,16 @@ async function runLogBeastCommand(
   // log-beast commands intentionally use non-zero exit codes to signal "bad status"
   // (e.g. `errors` sets exitCode when error rows exist). For agent workflows, we still
   // want the JSON payload even when exitCode != 0.
-  const parsed = safeJsonParse<any>(stdout, `log-beast ${command}`);
+  const schemas = getSchemas();
+  const schema =
+    command === "frontend"
+      ? schemas.LogBeastFrontendSchema
+      : command === "dashboard"
+        ? schemas.LogBeastDashboardSchema
+        : command === "errors"
+          ? schemas.LogBeastErrorsSchema
+          : schemas.LogBeastGenericSchema;
+  const parsed = safeJsonParseZod<any>(stdout, schema, `log-beast ${command}`);
   return { ...parsed, exitCode: r.exitCode };
 }
 
@@ -1465,6 +2082,8 @@ async function main(): Promise<void> {
 
   if (cmd === "logs" && sub === "story") return cmdLogsStory(opts);
   if (cmd === "logs" && sub === "trace") return cmdLogsTrace(opts, args[0], args.slice(1));
+
+  if (cmd === "workers" && sub === "run") return cmdWorkersRun(opts, args);
 
   if (cmd === "help") {
     printHelp();

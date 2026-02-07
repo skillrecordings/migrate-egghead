@@ -23,6 +23,7 @@ When an agent hits friction:
 - `gh` authenticated with scopes: `repo`, `read:org`, `project`
 - `AGENT_AXIOM_TOKEN` set (for Axiom queries)
 - `~/Code/skillrecordings/log-beast` present (CLI wrapper uses it)
+- `bun install` run in repo root (agent CLI depends on `zod` for output validation)
 
 ## Quick Start
 
