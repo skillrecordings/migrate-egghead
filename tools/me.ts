@@ -63,6 +63,7 @@ const PROJECT_SYNC_URLS: string[] = [
   "https://github.com/skillrecordings/egghead-next/issues/1561",
   "https://github.com/skillrecordings/egghead-next/issues/1562",
   "https://github.com/skillrecordings/egghead-next/issues/1563",
+  "https://github.com/skillrecordings/egghead-next/issues/1564",
   "https://github.com/skillrecordings/egghead-next/issues/1555",
   "https://github.com/skillrecordings/egghead-next/issues/1556",
 
@@ -256,9 +257,19 @@ function readCursor(): AnalysisCursor | null {
   }
 }
 
+function atomicWriteFileSync(targetPath: string, contents: string): void {
+  // Avoid partial reads when multiple commands/agents touch the same file.
+  // Write to a temp file in the same directory, then rename (atomic on POSIX).
+  const dir = path.dirname(targetPath);
+  const base = path.basename(targetPath);
+  const tmp = path.join(dir, `.${base}.tmp.${process.pid}.${Math.random().toString(16).slice(2)}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(tmp, contents, "utf8");
+  fs.renameSync(tmp, targetPath);
+}
+
 function writeCursor(cursor: AnalysisCursor): void {
-  fs.mkdirSync(path.dirname(CURSOR_CACHE_PATH), { recursive: true });
-  fs.writeFileSync(CURSOR_CACHE_PATH, JSON.stringify(cursor, null, 2));
+  atomicWriteFileSync(CURSOR_CACHE_PATH, JSON.stringify(cursor, null, 2));
 }
 
 function clearCursor(): void {
@@ -711,8 +722,7 @@ function isProjectCacheFresh(cache: ProjectCache): boolean {
 }
 
 function writeProjectCache(opts: GlobalOpts, cache: ProjectCache): void {
-  fs.mkdirSync(ME_CACHE_DIR, { recursive: true });
-  fs.writeFileSync(getProjectCachePath(opts), JSON.stringify(cache, null, 2));
+  atomicWriteFileSync(getProjectCachePath(opts), JSON.stringify(cache, null, 2));
 }
 
 async function refreshProjectCache(opts: GlobalOpts): Promise<ProjectCache> {

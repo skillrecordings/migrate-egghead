@@ -6,6 +6,13 @@ Skill path: `.agents/skills/migrate-egghead`
 
 Prime directive: **IMPROVE THE CLI** for agents (`tools/me.ts`). It is agent-only. Period.
 
+Second directive: **USE THE ORG PROJECT**.
+
+- Canonical tracker: [skillrecordings/projects/4](https://github.com/orgs/skillrecordings/projects/4)
+- Idempotent sync: `bun tools/me.ts sync`
+- Add issues: `bun tools/me.ts project add egghead-next:1564 migrate-egghead:21`
+- Refs: prefer `repo:num` (not `repo#num`) because `#` becomes a comment in some shells/runners.
+
 ---
 
 # Agent Instructions for migrate-egghead
