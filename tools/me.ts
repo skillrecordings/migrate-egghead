@@ -1918,9 +1918,16 @@ function pickTop<T>(arr: T[] | undefined, n: number): T[] {
   return Array.isArray(arr) ? arr.slice(0, n) : [];
 }
 
-function buildAnalysisMarker(tr: EffectiveTimeRange, compare: boolean): string {
+function buildAnalysisMarker(
+  tr: EffectiveTimeRange,
+  compare: boolean,
+  deploy?: { ref: string; since: string } | null,
+): string {
   // Cursor runs advance `since` on each successful run, so `since` alone is a stable idempotency key.
   // (Avoid spamming comments because `until=now` changes every run.)
+  if (deploy?.since) {
+    return `<!-- migrate-egghead:analysis-full deploy_since=${deploy.since} compare=${compare ? "1" : "0"} -->`;
+  }
   if (tr.source === "cursor") {
     return `<!-- migrate-egghead:analysis-full since=${tr.since} compare=${compare ? "1" : "0"} -->`;
   }
@@ -2144,7 +2151,7 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
 
   let commentResults: CommentResult[] = [];
   if (commentRefs.length > 0) {
-    const marker = buildAnalysisMarker(tr, compare);
+    const marker = buildAnalysisMarker(tr, compare, deploy);
     const body = buildAnalysisCommentBody(result, marker);
     const issueUrls = commentRefs.map(ref => toIssueUrl(opts.owner, ref));
     commentResults = await Promise.all(issueUrls.map(u => ensureIssueComment(opts, u, marker, body)));
