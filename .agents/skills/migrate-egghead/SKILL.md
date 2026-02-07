@@ -128,6 +128,15 @@ bun tools/me.ts project status egghead-next:1562 "In Progress"
 bun tools/me.ts labels ensure
 ```
 
+### 4) Parallel Workers (Read-Only)
+
+Use this to spawn multiple read-only investigations in parallel (Codex subprocesses). Output is schema-validated.
+
+```bash
+# Investigate multiple issues concurrently (no file edits)
+bun tools/me.ts workers run egghead-next:1564 egghead-next:1556 --max-parallel 2 --json | jq .
+```
+
 ## Output Contract (Agent-Only)
 
 When `stdout` is not a TTY, `tools/me.ts` defaults to JSON output automatically.
