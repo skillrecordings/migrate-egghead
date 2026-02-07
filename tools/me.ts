@@ -19,6 +19,8 @@ import path from "node:path";
 type OutputFormat = "text" | "json";
 
 const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
+const EGGHEAD_NEXT_DIR = path.join(REPO_ROOT, "egghead-next");
 
 type ZodModule = typeof import("zod");
 type ZodSchema<T> = { safeParse: (input: unknown) => { success: true; data: T } | { success: false; error: any } };
@@ -54,6 +56,8 @@ const DEFAULT_REPOS = ["migrate-egghead", "egghead-next", "egghead-rails"] as co
 const WORKER_OUTPUT_SCHEMA_PATH =
   process.env.ME_WORKER_OUTPUT_SCHEMA ?? path.join(SCRIPT_DIR, "worker_output.schema.json");
 
+const DEFAULT_VERCEL_SCOPE = process.env.ME_VERCEL_SCOPE ?? process.env.VERCEL_SCOPE ?? "eggheadio";
+
 const PROJECT_SYNC_URLS: string[] = [
   // migrate-egghead coordination issues
   "https://github.com/skillrecordings/migrate-egghead/issues/21",
@@ -78,6 +82,15 @@ const PROJECT_SYNC_URLS: string[] = [
 
   // legacy bug that blocks pricing correctness
   "https://github.com/skillrecordings/egghead-rails/issues/5027",
+];
+
+const ANALYSIS_COMMENT_PACK_REFS: string[] = [
+  "migrate-egghead:21",
+  "egghead-next:1564", // /courses 500s
+  "egghead-next:1556", // search SSR cache
+  "egghead-next:1562", // tRPC feature flag tax
+  "egghead-next:1560", // skip Sanity
+  "egghead-next:1563", // GraphQL lesson metadata fallback
 ];
 
 function isTty(): boolean {
@@ -136,7 +149,7 @@ Global options:
 Commands:
   check
   sync
-  analysis full [--compare] [--comment <issueRef>] [--advance] [--no-advance]
+  analysis full [--since-deploy [ref]] [--compare] [--comment-pack] [--comment <issueRef>] [--advance] [--no-advance]
   cursor show
   cursor set <iso>
   cursor clear
@@ -521,6 +534,16 @@ function buildSchemas() {
     })
     .passthrough();
 
+  const VercelInspectSchema = z
+    .object({
+      id: z.string().optional(),
+      createdAt: z.number(),
+      url: z.string().optional(),
+      target: z.string().nullable().optional(),
+      readyState: z.string().optional(),
+    })
+    .passthrough();
+
   const WorkerOutputSchema = z
     .object({
       ok: z.boolean(),
@@ -563,6 +586,7 @@ function buildSchemas() {
     LogBeastFrontendSchema,
     LogBeastDashboardSchema,
     LogBeastErrorsSchema,
+    VercelInspectSchema,
     WorkerOutputSchema,
   };
 }
@@ -757,6 +781,9 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
   const hasLogBeast = fs.existsSync(LOG_BEAST_CLI);
   const hasAxiomToken = Boolean(process.env.AGENT_AXIOM_TOKEN);
   const hasZodDep = hasZod();
+  const vercel = await run(["vercel", "--version"], { quiet: true });
+  const hasVercel = vercel.exitCode === 0;
+  const vercelVersion = hasVercel ? (vercel.stdout || vercel.stderr || "").trim().split("\n").pop() : null;
 
   const ok =
     gh.exitCode === 0 &&
@@ -765,7 +792,8 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
     hasReadOrgScope &&
     hasLogBeast &&
     hasAxiomToken &&
-    hasZodDep;
+    hasZodDep &&
+    hasVercel;
 
   const data = {
     ok,
@@ -787,6 +815,14 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
     },
     deps: {
       zod: hasZodDep,
+      vercel: hasVercel,
+    },
+    vercel: {
+      ok: hasVercel,
+      version: vercelVersion,
+      scope: DEFAULT_VERCEL_SCOPE,
+      token: Boolean(getVercelToken()),
+      cwd: EGGHEAD_NEXT_DIR,
     },
   };
 
@@ -799,6 +835,7 @@ async function cmdCheck(opts: GlobalOpts): Promise<void> {
   console.log(`log-beast cli: ${hasLogBeast ? "ok" : "missing"} (${LOG_BEAST_CLI})`);
   console.log(`AGENT_AXIOM_TOKEN: ${hasAxiomToken ? "set" : "missing"}`);
   console.log(`zod: ${hasZodDep ? "ok" : "missing"} (run \`bun install\`)`);
+  console.log(`vercel: ${hasVercel ? "ok" : "missing"}${vercelVersion ? ` (${vercelVersion})` : ""}`);
   if (!ok) process.exit(2);
 }
 
@@ -1286,7 +1323,14 @@ async function cmdWorkersRun(opts: GlobalOpts, args: string[]): Promise<void> {
         durationMs: 0,
         exitCode: 0,
         outputRaw: "(dry-run: worker not executed)",
-        outputJson: { dry_run: true, issue: issue.url, workdir },
+        outputJson: {
+          ok: true,
+          summary: "dry-run: worker not executed",
+          code_paths: [],
+          hypotheses: [],
+          quick_wins: [],
+          next_steps: [],
+        },
       };
     }
 
@@ -1705,6 +1749,8 @@ type AnalysisFullArgs = {
   advance: boolean;
   noAdvance: boolean;
   commentRefs: string[];
+  commentPack: boolean;
+  sinceDeploy?: string;
 };
 
 function parseAnalysisFullArgs(args: string[]): AnalysisFullArgs {
@@ -1713,12 +1759,29 @@ function parseAnalysisFullArgs(args: string[]): AnalysisFullArgs {
     advance: false,
     noAdvance: false,
     commentRefs: [],
+    commentPack: false,
+    sinceDeploy: undefined,
   };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--compare") {
       res.compare = true;
+      continue;
+    }
+    if (a === "--comment-pack") {
+      res.commentPack = true;
+      continue;
+    }
+    if (a === "--since-deploy") {
+      const next = args[i + 1];
+      // Allow: `--since-deploy --compare` (defaults to prod alias).
+      if (!next || next.startsWith("-")) {
+        res.sinceDeploy = "egghead.io";
+      } else {
+        res.sinceDeploy = next;
+        i++;
+      }
       continue;
     }
     if (a === "--advance") {
@@ -1738,6 +1801,81 @@ function parseAnalysisFullArgs(args: string[]): AnalysisFullArgs {
   }
 
   return res;
+}
+
+function getVercelToken(): string | null {
+  return process.env.ME_VERCEL_TOKEN ?? process.env.VERCEL_TOKEN ?? null;
+}
+
+function normalizeVercelInspectTarget(ref: string): string {
+  const s0 = String(ref ?? "").trim();
+  if (!s0) return "egghead.io";
+
+  const s = s0.toLowerCase();
+  if (s === "prod" || s === "production" || s === "main" || s === "egghead.io") return "egghead.io";
+
+  // Vercel UI URL: https://vercel.com/<team>/<project>/<deploymentId>
+  // We can inspect via `dpl_<id>`.
+  try {
+    const u = new URL(s0);
+    if (u.hostname === "vercel.com" || u.hostname.endsWith(".vercel.com")) {
+      const parts = u.pathname.split("/").filter(Boolean);
+      const maybeId = parts[parts.length - 1];
+      if (maybeId) return maybeId.startsWith("dpl_") ? maybeId : `dpl_${maybeId}`;
+    }
+    // Any other URL: inspect by hostname (aliases work).
+    if (u.hostname) return u.hostname;
+  } catch {
+    // not a URL
+  }
+
+  if (s0.startsWith("dpl_")) return s0;
+  if (/^[a-zA-Z0-9]{12,}$/.test(s0)) return `dpl_${s0}`; // Vercel UI id (base62-ish)
+  return s0; // hostnames like egghead.io or *.vercel.app
+}
+
+async function getVercelDeploymentCreatedAtIso(ref: string): Promise<string> {
+  if (!fs.existsSync(EGGHEAD_NEXT_DIR)) {
+    die(`Missing submodule path: ${EGGHEAD_NEXT_DIR}\n` + `Hint: run from repo root or ensure submodules are present.`);
+  }
+
+  const target = normalizeVercelInspectTarget(ref);
+  const token = getVercelToken();
+
+  const cmd = [
+    "vercel",
+    "inspect",
+    target,
+    "--scope",
+    DEFAULT_VERCEL_SCOPE,
+    "--format=json",
+    "--cwd",
+    EGGHEAD_NEXT_DIR,
+  ];
+  if (token) cmd.push("--token", token);
+
+  const r = await run(cmd, { quiet: true });
+  if (r.exitCode !== 0) {
+    const err = (r.stderr || r.stdout || "").trim();
+    die(
+      `vercel inspect failed\n` +
+        `- target: ${target}\n` +
+        `- scope: ${DEFAULT_VERCEL_SCOPE}\n` +
+        `- cwd: ${EGGHEAD_NEXT_DIR}\n` +
+        (err ? `---\n${err}\n` : "") +
+        `Hint: if you hit a SAML prompt, set ME_VERCEL_TOKEN/VERCEL_TOKEN for non-interactive agents.\n`,
+    );
+  }
+
+  const schemas = getSchemas();
+  const parsed = safeJsonParseZod<any>(r.stdout, schemas.VercelInspectSchema, "vercel inspect");
+  const createdAtNum = typeof parsed.createdAt === "number" ? parsed.createdAt : Number(parsed.createdAt);
+  if (!Number.isFinite(createdAtNum) || createdAtNum <= 0) {
+    die(`vercel inspect returned invalid createdAt: ${String(parsed.createdAt)}`);
+  }
+
+  const createdMs = createdAtNum > 1e12 ? createdAtNum : createdAtNum * 1000;
+  return new Date(createdMs).toISOString();
 }
 
 function parseGitHubIssueUrl(issueUrl: string): { owner: string; repo: string; number: number } {
@@ -1817,6 +1955,9 @@ function buildAnalysisCommentBody(analysis: any, marker: string): string {
   lines.push("## Agent Report: Analysis Full");
   lines.push("");
   lines.push(`**Window:** \`${tr.since}\` -> \`${tr.until}\` (\`${tr.hours.toFixed(2)}h\`, source=\`${tr.source}\`)`);
+  if (analysis?.deploy?.since) {
+    lines.push(`**Deploy:** \`${analysis.deploy.since}\` (ref=\`${analysis.deploy.ref ?? "?"}\`)`);
+  }
   lines.push("");
   lines.push("### Frontend (Vercel)");
   lines.push(`- Cache: hitRate=${cache.hitRate ?? "?"}% missRate=${cache.missRate ?? "?"}% (hits=${formatCount(cache.hits)} misses=${formatCount(cache.misses)})`);
@@ -1917,9 +2058,25 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
   const compare = parsedArgs.compare;
   const advanceFlag = parsedArgs.advance;
   const noAdvanceFlag = parsedArgs.noAdvance;
-  const commentRefs = parsedArgs.commentRefs;
+  const commentRefs0 = parsedArgs.commentRefs;
 
-  const tr = getEffectiveTimeRange(opts);
+  let effectiveOpts: GlobalOpts = opts;
+  let deploy: { ref: string; since: string } | null = null;
+  if (parsedArgs.sinceDeploy) {
+    if (opts.since) die("analysis full: do not pass both --since and --since-deploy");
+    const since = await getVercelDeploymentCreatedAtIso(parsedArgs.sinceDeploy);
+    deploy = { ref: parsedArgs.sinceDeploy, since };
+    effectiveOpts = { ...opts, since };
+  }
+
+  const commentRefs = Array.from(
+    new Set([
+      ...commentRefs0,
+      ...(parsedArgs.commentPack ? ANALYSIS_COMMENT_PACK_REFS : []),
+    ]),
+  );
+
+  const tr = getEffectiveTimeRange(effectiveOpts);
   const shouldAdvance = noAdvanceFlag ? false : advanceFlag ? true : tr.source !== "explicit";
 
   const [frontend, backendDashboard, backendErrors] = await Promise.all([
@@ -1928,7 +2085,7 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
     runLogBeastCommand("errors", tr),
   ]);
 
-  const storyOpts: GlobalOpts = { ...opts, since: tr.since, until: tr.until, format: "json", quiet: true };
+  const storyOpts: GlobalOpts = { ...effectiveOpts, since: tr.since, until: tr.until, format: "json", quiet: true };
   const story = await getLogsStoryResult(storyOpts);
 
   let compareResult: any = null;
@@ -1966,6 +2123,7 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
 
   const result = {
     timeRange: tr,
+    deploy,
     cursor: {
       path: CURSOR_CACHE_PATH,
       used: tr.cursorUsed,

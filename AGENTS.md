@@ -597,6 +597,9 @@ bun tools/me.ts analysis full --json | jq .
 # Include deltas vs the previous same-length window
 bun tools/me.ts analysis full --json --compare | jq .
 
+# Since current production deploy (uses Vercel CLI via egghead-next/)
+bun tools/me.ts analysis full --since-deploy --compare --comment-pack --json | jq '.comment.results'
+
 # Post a tight markdown summary onto an issue (idempotent by time-window marker)
 bun tools/me.ts analysis full --json --compare --comment migrate-egghead:21 | jq '.comment.results'
 

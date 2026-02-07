@@ -80,6 +80,25 @@ Cursor rules:
 - If you pass `--since/--until` explicitly, cursor will NOT advance unless you add `--advance`.
 - Use `--no-advance` to keep cursor fixed (re-run analysis on same window).
 
+### 1.2) Full Analysis (Since Deploy)
+
+Use this when you want the story **since the current production deploy** (or a specific deploy link).
+
+```bash
+# Since current prod deploy (defaults to egghead.io alias)
+bun tools/me.ts analysis full --since-deploy --compare --json | jq .
+
+# Since a specific deploy (Vercel UI URL or deployment id)
+bun tools/me.ts analysis full --since-deploy https://vercel.com/eggheadio/egghead-io-nextjs/<id> --compare --json | jq .
+
+# Post the report to the canonical issue pack (idempotent markers)
+bun tools/me.ts analysis full --since-deploy --compare --comment-pack --json | jq '.comment.results'
+```
+
+Notes:
+- `--since-deploy` uses the `vercel` CLI (`vercel inspect`) under `egghead-next/`.
+- For non-interactive agents, set `ME_VERCEL_TOKEN`/`VERCEL_TOKEN` if SAML prompts break CLI auth.
+
 ### 2) Project Hygiene (Org Project #4)
 
 Refs: use `repo:num` (preferred) because `#` is comment syntax in some runners.
