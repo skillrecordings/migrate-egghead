@@ -129,44 +129,146 @@ function die(message: string, code = 1): never {
   process.exit(code);
 }
 
+type HelpSpec = {
+  name: string;
+  usage: string;
+  defaults: {
+    owner: string;
+    projectNumber: number;
+    hours: number;
+    vercelScope: string;
+    commentPackRefs: string[];
+  };
+  globalOptions: Array<{
+    flags: string[];
+    arg?: string;
+    description: string;
+    default?: string;
+  }>;
+  commands: Array<{
+    command: string;
+    args?: string;
+    description: string;
+    examples?: string[];
+  }>;
+  env: Array<{
+    name: string;
+    description: string;
+  }>;
+  refs: Array<{
+    kind: string;
+    example: string;
+    note?: string;
+  }>;
+};
+
+function getHelpSpec(): HelpSpec {
+  return {
+    name: "migrate-egghead agent CLI",
+    usage: "bun tools/me.ts [global options] <command> [args]",
+    defaults: {
+      owner: DEFAULT_OWNER,
+      projectNumber: DEFAULT_PROJECT_NUMBER,
+      hours: DEFAULT_HOURS,
+      vercelScope: DEFAULT_VERCEL_SCOPE,
+      commentPackRefs: [...ANALYSIS_COMMENT_PACK_REFS],
+    },
+    globalOptions: [
+      { flags: ["--owner"], arg: "<org>", description: "GitHub org/user", default: DEFAULT_OWNER },
+      { flags: ["--project"], arg: "<number>", description: "Org Project number", default: String(DEFAULT_PROJECT_NUMBER) },
+      { flags: ["--hours", "-h"], arg: "<n>", description: "Time range in hours for log queries", default: String(DEFAULT_HOURS) },
+      { flags: ["--since"], arg: "<iso>", description: "Log query start time (defaults to --hours window)" },
+      { flags: ["--until"], arg: "<iso>", description: "Log query end time (defaults to now)" },
+      { flags: ["--json"], description: "Emit JSON output (auto when stdout is not a TTY)" },
+      { flags: ["--quiet"], description: "Less output" },
+      { flags: ["--dry-run"], description: "Print actions without mutating GitHub state" },
+    ],
+    commands: [
+      { command: "check", description: "Verify gh scopes, log-beast path, env vars, deps", examples: ["bun tools/me.ts check --json | jq ."] },
+      { command: "sync", description: "Ensure labels and add mapped issues to org project", examples: ["bun tools/me.ts sync --json | jq ."] },
+      {
+        command: "analysis full",
+        args: "[--since-deploy [ref]] [--compare] [--comment-pack] [--comment <issueRef>] [--advance] [--no-advance]",
+        description: "Full investigation pack (frontend+backend+story), cursor-aware and idempotent comments",
+        examples: [
+          "bun tools/me.ts analysis full --json | jq .",
+          "bun tools/me.ts analysis full --since-deploy --compare --comment-pack --json | jq '.comment.results'",
+        ],
+      },
+      { command: "cursor show", description: "Show analysis cursor", examples: ["bun tools/me.ts cursor show --json | jq ."] },
+      { command: "cursor set", args: "<iso>", description: "Set analysis cursor (lastUntil)", examples: ["bun tools/me.ts cursor set 2026-02-07T00:00:00Z --json | jq ."] },
+      { command: "cursor clear", description: "Clear analysis cursor", examples: ["bun tools/me.ts cursor clear --json | jq ."] },
+      { command: "issues list", args: "[repo]", description: "List open issues (optionally per repo) as JSON", examples: ["bun tools/me.ts issues list egghead-next --json | jq '.count'"] },
+      { command: "labels ensure", description: "Ensure label taxonomy exists", examples: ["bun tools/me.ts labels ensure --json | jq ."] },
+      { command: "project add", args: "<ref...>", description: "Ensure issues exist in org project", examples: ["bun tools/me.ts project add egghead-next:1564 migrate-egghead:21 --json | jq ."] },
+      { command: "project list", args: "[Todo|In Progress|Done]", description: "List org project items", examples: ["bun tools/me.ts project list \"Todo\" --json | jq '.items | length'"] },
+      { command: "project status", args: "<ref> <Todo|In Progress|Done>", description: "Move an item across Status", examples: ["bun tools/me.ts project status egghead-next:1564 \"In Progress\" --json | jq ."] },
+      { command: "logs story", description: "Structured log story pack (frontend)", examples: ["bun tools/me.ts logs story -h 24 --json | jq ."] },
+      { command: "logs trace", args: "<request_id>", description: "Pass-through trace helper (uses log-beast trace)", examples: ["bun tools/me.ts logs trace <uuid> -h 24"] },
+      { command: "workers run", args: "<issueRef...> [--max-parallel <n>]", description: "Spawn parallel read-only workers (codex exec) with schema-validated outputs", examples: ["bun tools/me.ts workers run egghead-next:1564 egghead-next:1556 --max-parallel 2 --json | jq ."] },
+      { command: "help", description: "Print help (use --json for machine-readable spec)", examples: ["bun tools/me.ts help --json | jq ."] },
+    ],
+    env: [
+      { name: "AGENT_AXIOM_TOKEN", description: "Axiom API token (required for log-beast)" },
+      { name: "LOG_BEAST_CLI", description: "Override log-beast CLI path (default: ~/Code/skillrecordings/log-beast/src/cli.ts)" },
+      { name: "ME_OWNER", description: "Default GitHub owner/org" },
+      { name: "ME_PROJECT", description: "Default org project number" },
+      { name: "ME_HOURS", description: "Default hours window" },
+      { name: "ME_CURSOR_FILE", description: "Cursor file path (default: ~/.cache/migrate-egghead/analysis_cursor.json)" },
+      { name: "ME_CURSOR_MAX_HOURS", description: "Max cursor window (guardrail, default: 168h)" },
+      { name: "ME_CACHE_DIR", description: "Cache dir (project cache + cursor)" },
+      { name: "ME_WORKER_OUTPUT_SCHEMA", description: "Override worker output JSON schema path" },
+      { name: "ME_VERCEL_SCOPE", description: "Vercel team scope (default: eggheadio)" },
+      { name: "ME_VERCEL_TOKEN", description: "Vercel token for non-interactive agents (fallback: VERCEL_TOKEN)" },
+      { name: "VERCEL_TOKEN", description: "Fallback Vercel token" },
+    ],
+    refs: [
+      { kind: "issue url", example: "https://github.com/skillrecordings/egghead-next/issues/1561" },
+      { kind: "issue ref", example: "egghead-next:1561", note: "preferred (repo:num). Defaults owner to --owner." },
+      { kind: "issue ref", example: "egghead-next#1561", note: "may need quoting; in some shells # starts a comment" },
+    ],
+  };
+}
+
+function renderHelpText(spec: HelpSpec): string {
+  const lines: string[] = [];
+  lines.push(`${spec.name} (bun)`);
+  lines.push("");
+  lines.push("Usage:");
+  lines.push(`  ${spec.usage}`);
+  lines.push("");
+  lines.push("Global options:");
+  for (const o of spec.globalOptions) {
+    const flags = o.flags.join(", ");
+    const arg = o.arg ? ` ${o.arg}` : "";
+    const def = o.default ? ` (default: ${o.default})` : "";
+    lines.push(`  ${flags}${arg}  ${o.description}${def}`);
+  }
+  lines.push("");
+  lines.push("Commands:");
+  for (const c of spec.commands) {
+    const args = c.args ? ` ${c.args}` : "";
+    lines.push(`  ${c.command}${args}`);
+  }
+  lines.push("");
+  lines.push("Refs:");
+  for (const r of spec.refs) {
+    lines.push(`  - ${r.kind}: ${r.example}${r.note ? ` (${r.note})` : ""}`);
+  }
+  return lines.join("\n");
+}
+
 function printHelp(): void {
-  console.log(`
-migrate-egghead agent CLI (bun)
+  console.log(renderHelpText(getHelpSpec()));
+}
 
-Usage:
-  bun tools/me.ts [global options] <command> [args]
-
-Global options:
-  --owner <org>         GitHub org/user (default: ${DEFAULT_OWNER})
-  --project <number>    Org Project number (default: ${DEFAULT_PROJECT_NUMBER})
-  --hours, -h <n>       Time range in hours for log queries (default: ${DEFAULT_HOURS})
-  --since <iso>         Log query start time (defaults to --hours window)
-  --until <iso>         Log query end time (defaults to now)
-  --json                Emit JSON output (auto when stdout is not a TTY)
-  --quiet               Less output
-  --dry-run             Print actions without mutating GitHub state
-
-Commands:
-  check
-  sync
-  analysis full [--since-deploy [ref]] [--compare] [--comment-pack] [--comment <issueRef>] [--advance] [--no-advance]
-  cursor show
-  cursor set <iso>
-  cursor clear
-  issues list [repo]
-  labels ensure
-  project add <ref...>
-  project list [Todo|In Progress|Done]
-  project status <ref> <Todo|In Progress|Done>
-  logs story
-  logs trace <request_id>
-  workers run <issueRef...> [--max-parallel <n>]
-
-Refs:
-  - Full URL: https://github.com/skillrecordings/egghead-next/issues/1561
-  - Short:    egghead-next:1561 (preferred, defaults owner to --owner)
-  - Short:    egghead-next#1561 (may need quoting; in some shells # starts a comment)
-`);
+function cmdHelp(opts: GlobalOpts): void {
+  const spec = getHelpSpec();
+  if (opts.format === "json") {
+    console.log(JSON.stringify(spec));
+    return;
+  }
+  console.log(renderHelpText(spec));
 }
 
 function parseGlobal(argv: string[]): { opts: GlobalOpts; rest: string[] } {
@@ -2288,8 +2390,8 @@ async function main(): Promise<void> {
   if (cmd === "workers" && sub === "run") return cmdWorkersRun(opts, args);
 
   if (cmd === "help") {
-    printHelp();
-    process.exit(0);
+    cmdHelp(opts);
+    return;
   }
 
   die(`Unknown command: ${[cmd, sub].filter(Boolean).join(" ")}`);

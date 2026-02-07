@@ -28,6 +28,10 @@ When an agent hits friction:
 ## Quick Start
 
 ```bash
+# Canonical CLI reference (machine-readable)
+# If this output changes, update this skill + AGENTS.md.
+bun tools/me.ts help --json | jq .
+
 # Sanity check env/scopes + log-beast path + token
 bun tools/me.ts check
 
