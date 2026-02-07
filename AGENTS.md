@@ -1,3 +1,13 @@
+# LOAD THE `migrate-egghead` SKILL NOW
+
+Every session. No exceptions.
+
+Skill path: `.agents/skills/migrate-egghead`
+
+Prime directive: **IMPROVE THE CLI** for agents (`tools/me.ts`). It is agent-only. Period.
+
+---
+
 # Agent Instructions for migrate-egghead
 
 > **Read this first.** This file contains critical context and rules for AI agents working on this migration.
@@ -276,6 +286,39 @@ log-beast frontend-regions # Traffic by Vercel edge region
 log-beast raw '<APL>'      # Custom APL query
 ```
 
+**Agent-first prime directive:** keep `log-beast` optimized for agents, not humans. If new structured events land in production, add/refresh `log-beast` commands in the same PR so agents can query them directly without hand-writing APL every time.
+
+### Structured Log Story Query Pack (24h)
+
+Use this pack whenever evaluating frontend/backend performance stories after a deploy:
+
+```bash
+# Core baseline (frontend + backend)
+log-beast frontend
+log-beast dashboard
+
+# Drill into structured event families (replace EVENT_NAME)
+log-beast raw '["vercel"] | where ["request.host"] startswith "egghead.io" and ["vercel.source"] == "lambda" and ["message"] startswith "{" | extend msg=parse_json(["message"]) | where tostring(msg.event) == "EVENT_NAME" | extend duration_ms=todouble(msg.duration_ms) | extend is_error=isnotnull(msg.error_message) or isnotnull(msg.error) or tostring(msg.ok) == "false" | summarize calls=count(), avg_ms=avg(duration_ms), p95_ms=percentile(duration_ms, 95), errors=countif(is_error)'
+
+# Confirm search cache efficacy
+log-beast raw '["vercel"] | where ["request.host"] startswith "egghead.io" and ["vercel.source"] == "lambda" and ["message"] startswith "{" | extend msg=parse_json(["message"]) | where tostring(msg.event) == "search_ssr_cache" | summarize hits=countif(tostring(msg.status) == "hit"), misses=countif(tostring(msg.status) == "miss"), total=count() | extend hit_rate=100.0 * todouble(hits) / todouble(total)'
+```
+
+Event names worth tracking continuously:
+- `lesson.loadLesson.summary`
+- `lesson.loadLessonMetadataFromGraphQL.graphql`
+- `lesson.loadLessonComments.graphql`
+- `course.loadPlaylist.summary`
+- `course.loadResourcesForCourse.summary`
+- `trpc.call`
+- `lesson.trpc.getLessonbySlug.result`
+- `search_ssr_cache`
+
+When you find a new hot path:
+1. Add/verify structured fields in app code.
+2. Add or update a `log-beast` command to expose it.
+3. Open/update GitHub issues with exact event names and 24h metrics.
+
 Requires `AGENT_AXIOM_TOKEN` env var.
 
 ### Two Axiom Datasets
@@ -310,6 +353,160 @@ curl -s -X POST "https://api.axiom.co/v1/datasets/_apl?format=legacy" \
 | `AGENT_AXIOM_TOKEN` | `~/.zshrc` | Axiom API access |
 | `AGENT_AXIOM_DATASET` | `~/.zshrc` | Dataset name (`egghead-rails`) |
 
+### Vercel CLI
+
+egghead-next deploys to Vercel under the **eggheadio** org (NOT skillrecordings).
+
+```bash
+# Link the project (one-time, creates .vercel/)
+cd egghead-next && vercel link
+# Scope: eggheadio, Project: egghead-io-nextjs
+
+# All commands need --scope eggheadio (or run from linked dir)
+vercel ls --scope eggheadio              # List recent deployments
+vercel inspect <url> --scope eggheadio   # Deployment details (status, build time, aliases)
+vercel logs <url> --scope eggheadio      # Build + runtime logs
+vercel env ls --scope eggheadio          # List env vars
+vercel env add <KEY> preview             # Add env var to preview deployments
+vercel redeploy <url> --scope eggheadio  # Retrigger a deployment
+```
+
+**Gotchas:**
+- **NEVER use `gh api repos/.../deployments` to check deploy status** — GitHub Deployments API labels Vercel deploys incorrectly (shows "Preview" for production). Always use `vercel ls --prod --scope eggheadio` as the source of truth.
+- The org uses SAML — you may need to re-authenticate periodically (`vercel login --scope eggheadio`)
+- Deployment URLs use the format `egghead-io-nextjs-<hash>-eggheadio1.vercel.app`
+- Deployment IDs use `dpl_` prefix but CLI accepts the URL hostname too
+- `CYPRESS_INSTALL_BINARY=0` is set on preview env to skip Cypress binary download (ancient 6.9.1 dep, flaky CDN)
+- The `.vercel` directory is gitignored
+- `Previous build caches not available` on preview deploys is normal — Vercel only caches production builds
+
+### agent-browser (Browser Automation)
+
+Use `agent-browser` for smoke testing deploys, verifying UI state, and checking response headers.
+
+```bash
+# Navigate and get interactive elements (prefer -i to reduce context)
+agent-browser open <url>
+agent-browser snapshot -i              # Interactive elements only — ALWAYS prefer this
+
+# Check cache headers
+agent-browser eval "await fetch(window.location.href).then(r => Object.fromEntries(r.headers))"
+
+# Verify page renders
+agent-browser screenshot path.png      # Save screenshot
+agent-browser get title                # Page title
+agent-browser get text @e1             # Element text by ref
+
+# Console errors (pre-existing noise is expected)
+agent-browser console                  # View console messages
+agent-browser errors                   # View page errors
+```
+
+**Rules:**
+- **Always use `snapshot -i`** (interactive elements only) — full snapshots dump massive DOM trees and burn context
+- Use `snapshot -s "#selector"` to scope to specific sections when needed
+- Close the browser when done: `agent-browser close`
+
+### Preview Deploy Smoke Test SOP
+
+Run this after every preview deploy to catch regressions before merging. Uses `agent-browser` + `curl`.
+
+#### 1. Confirm deploy is ready
+
+```bash
+vercel ls --scope eggheadio | head -5   # Look for ● Ready on your branch
+```
+
+If still building, wait. Don't smoke test a build in progress.
+
+#### 2. Critical pages (render check)
+
+Open each page, verify it doesn't white-screen or throw a client-side error.
+
+```bash
+PREVIEW="https://egghead-io-nextjs-<hash>-eggheadio1.vercel.app"
+
+agent-browser open "$PREVIEW"
+agent-browser snapshot -i                              # Homepage renders?
+agent-browser open "$PREVIEW/courses/the-beginner-s-guide-to-react"
+agent-browser snapshot -i                              # Course page renders?
+agent-browser open "$PREVIEW/lessons/react-a-beginners-guide-to-react-introduction"
+agent-browser snapshot -i                              # Lesson page + video player?
+agent-browser open "$PREVIEW/q/react"
+agent-browser snapshot -i                              # Search results + facets?
+```
+
+**Pages to hit:**
+
+| Page | Route | What to check |
+|------|-------|---------------|
+| Homepage | `/` | Hero, course cards load |
+| Course | `/courses/<slug>` | Title, lesson list, instructor |
+| Lesson | `/lessons/<slug>` | Video player present, title |
+| Search | `/q/<term>` | Facets sidebar, result cards |
+| Pricing | `/pricing` | Plans render (needs Stripe env var) |
+
+#### 3. Cache headers (CDN validation)
+
+Hit the same page twice — second request should be a cache HIT.
+
+```bash
+# First request warms the cache
+curl -sI "$PREVIEW/courses/the-beginner-s-guide-to-react" | grep -i 'x-vercel-cache'
+# → x-vercel-cache: MISS (expected)
+
+# Second request should HIT
+curl -sI "$PREVIEW/courses/the-beginner-s-guide-to-react" | grep -i 'x-vercel-cache'
+# → x-vercel-cache: HIT (confirms s-maxage is working)
+```
+
+If second request is still MISS: check `Cache-Control` header — `s-maxage=0` or `private` means no CDN caching.
+
+#### 4. Console errors
+
+```bash
+agent-browser console
+agent-browser errors
+```
+
+**Known noise (ignore):**
+- `course undefined` logs — pre-existing, harmless
+- Algolia `userToken` warning — cosmetic
+- Hydration mismatches on timestamps — SSR/client time skew
+
+**Red flags (investigate):**
+- Uncaught TypeError / ReferenceError — broken component
+- 500 responses in network — API route crashing
+- `ChunkLoadError` — build artifact mismatch
+- `NEXT_REDIRECT` in console — broken redirect loop
+
+#### 5. API spot-check
+
+```bash
+# cio-subscriber (was 11% error rate, should be fixed)
+curl -s "$PREVIEW/api/cio-subscriber" | head -20
+
+# tRPC health (should respond, not 500)
+curl -sI "$PREVIEW/api/trpc/healthcheck" | head -5
+```
+
+#### 6. Cleanup
+
+```bash
+agent-browser close
+```
+
+#### Pass/Fail Criteria
+
+| Check | Pass | Fail |
+|-------|------|------|
+| All 4 pages render | Content visible, no white screen | Blank page, error boundary, hydration crash |
+| Cache headers | `x-vercel-cache: HIT` on second request | Persistent MISS or `s-maxage=0` |
+| Console errors | Only known noise | New uncaught exceptions or 500s |
+| API routes | 200 or expected 4xx | 500 or timeout |
+
+If any check fails: don't merge. Debug with `/vercel-debug`, check `vercel logs <url> --scope eggheadio`.
+
 ---
 
 ## Linear Integration (skill-cli)
@@ -341,6 +538,14 @@ skill-cli linear issues --team EGG --status "Todo"
 | Skill | Trigger | Purpose |
 |-------|---------|---------|
 | `/code-path-migrator` | "migrate endpoint", "port resolver", "rawdog postgres" | Trace Rails code path → generate raw SQL TS function for egghead-next |
+| `/vercel-deploy` | "deploy", "vercel", "build failed", "redeploy" | Manage Vercel deployments, debug build failures, env vars (eggheadio org) |
+
+### Global (`~/.claude/skills/`)
+
+| Skill | Trigger | Purpose |
+|-------|---------|---------|
+| `/vercel-debug` | "build failed", "500 on vercel", "cache miss", "why is this slow" | General Vercel debugging: triage tree, build/runtime/cache diagnostics |
+| `/agent-browser` | "smoke test", "check the page", "browser test" | Browser automation for testing deploys, checking UI, verifying headers |
 
 ### In egghead-rails (`egghead-rails/.claude/skills/`)
 
@@ -359,6 +564,84 @@ skill-cli linear issues --team EGG --status "Todo"
 | migrate-egghead | #15 | Auth drop-off signal (10:1 REST:GraphQL) | HIGH |
 | migrate-egghead | #16 | PPP coupon failures deep dive | MEDIUM |
 | migrate-egghead | #12 | Stripe coupon caching (deployed, 93.9% hit) | DONE |
+
+---
+
+## Issue Triage + Project Workflow
+
+Keep issues consistent across repos so agents can filter quickly.
+
+### Agent CLI (`tools/me.ts`)
+
+This repo includes an agent-first Bun CLI that wraps `gh` + `log-beast` into a few idempotent commands.
+
+Sources for CLI conventions:
+- `Building Modern CLI Applications in Go` (p.59) for standard flags/subcommand conventions.
+- `Building Modern CLI Applications in Go` (p.240) for machine-readable output guidance when not writing to a TTY.
+
+```bash
+# Verify environment (gh scopes, log-beast path, AGENT_AXIOM_TOKEN)
+bun tools/me.ts check
+
+# Ensure labels + add the mapped perf/observability issues into org project #4
+bun tools/me.ts sync
+
+# Structured-log story pack (agent-readable JSON)
+bun tools/me.ts logs story -h 24 --json | jq .
+
+# Add individual items to project #4 (use : not #)
+bun tools/me.ts project add egghead-next:1561 migrate-egghead:21
+
+# List org project items (optionally filter by Status)
+bun tools/me.ts project list --json | jq '.items[] | {status, url, title}'
+bun tools/me.ts project list "Todo"
+
+# Move an item across project Status
+bun tools/me.ts project status egghead-next:1561 "In Progress"
+
+# Trace a request end-to-end (frontend + backend) by request_id
+bun tools/me.ts logs trace d3124e21-3c5c-4117-a11d-f824884ccfae -h 24
+```
+
+### Label Taxonomy (required)
+
+**`migrate-egghead` (coordination repo)**
+- Areas: `area:frontend`, `area:backend`, `area:observability`, `area:auth`, `area:pricing`
+- Types: `type:discovery`, `type:perf`, `type:bug`, `type:strategy`
+- Priority: `priority:critical`, `priority:high`
+- Execution: `agent/ready`
+
+**`egghead-next` (implementation repo)**
+- `perf`, `refactor`, `search`, `observability`, `agent/ready`
+
+**`egghead-rails` (legacy backend repo)**
+- `bug 🐛`, `api`, `payments`, `auth`, `search` (as applicable)
+
+### Triage SOP
+
+```bash
+# Review open issues with labels
+gh issue list -R skillrecordings/migrate-egghead --state open --json number,title,labels,url
+gh issue list -R skillrecordings/egghead-next --state open --json number,title,labels,url
+gh issue list -R skillrecordings/egghead-rails --state open --json number,title,labels,url
+
+# Apply labels
+gh issue edit <num> -R <owner/repo> --add-label <label>
+```
+
+### Org Project #4 (`skillrecordings/projects/4`)
+
+All cross-repo perf/observability issues should be added to Project #4.
+
+```bash
+# One-time auth scope fix for project commands
+gh auth refresh -s read:project -s project
+
+# Add issue to org project
+gh project item-add 4 --owner skillrecordings --url https://github.com/skillrecordings/<repo>/issues/<num>
+```
+
+If `gh` says missing `read:project`, stop and refresh auth before continuing. Do not silently skip project updates.
 
 ---
 
