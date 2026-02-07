@@ -583,6 +583,17 @@ Sources for CLI conventions:
 # Verify environment (gh scopes, log-beast path, AGENT_AXIOM_TOKEN)
 bun tools/me.ts check
 
+# Full investigation pack (frontend + backend + structured story)
+# Uses a cursor by default so agents analyze "since last time" without guessing.
+bun tools/me.ts analysis full --json | jq .
+
+# Include deltas vs the previous same-length window
+bun tools/me.ts analysis full --json --compare | jq .
+
+# Cursor ops (optional)
+bun tools/me.ts cursor show --json | jq .
+bun tools/me.ts cursor clear
+
 # Ensure labels + add the mapped perf/observability issues into org project #4
 bun tools/me.ts sync
 

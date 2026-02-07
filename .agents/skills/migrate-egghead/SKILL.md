@@ -1,6 +1,6 @@
 ---
 name: migrate-egghead
-description: Agent-only workflow for migrate-egghead. Uses the agent CLI `bun tools/me.ts` to (1) query Axiom via log-beast story packs, (2) normalize labels, and (3) manage org Project #4 items/status. Use whenever doing perf/observability triage, GitHub issue/project hygiene, or improving the agent CLI itself.
+description: Agent-only workflow for migrate-egghead, including "full analysis" investigations. Uses the agent CLI `bun tools/me.ts` to (1) query Axiom via log-beast story packs, (2) run a cursor-based `analysis full` report (with optional deltas), (3) normalize labels, and (4) manage org Project #4 items/status. Use whenever doing perf/observability triage, GitHub issue/project hygiene, or improving the agent CLI itself.
 ---
 
 # migrate-egghead (Agent Skill)
@@ -49,6 +49,28 @@ bun tools/me.ts logs story -h 24 --json | jq .
 Use the output to:
 - Update existing issues with exact event names + 24h metrics.
 - Create missing issues (prefer `egghead-next` for implementation, `migrate-egghead` for coordination).
+
+### 1.1) Full Analysis (Cursor-Based)
+
+Agent phrase "full analysis" means: run the full pack with a cursor so we only query *new* time since last investigation.
+
+```bash
+# Full investigation pack (frontend + backend + structured story)
+# Advances cursor by default (unless you passed --since/--until).
+bun tools/me.ts analysis full --json | jq .
+
+# Include deltas vs previous same-length window (helps track progress)
+bun tools/me.ts analysis full --json --compare | jq .
+
+# Cursor ops
+bun tools/me.ts cursor show --json | jq .
+bun tools/me.ts cursor clear
+bun tools/me.ts cursor set 2026-02-07T00:00:00Z
+```
+
+Cursor rules:
+- If you pass `--since/--until` explicitly, cursor will NOT advance unless you add `--advance`.
+- Use `--no-advance` to keep cursor fixed (re-run analysis on same window).
 
 ### 2) Project Hygiene (Org Project #4)
 

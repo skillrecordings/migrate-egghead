@@ -39,6 +39,9 @@ const LOG_BEAST_CLI =
 
 const ME_CACHE_DIR = process.env.ME_CACHE_DIR ?? path.join(os.homedir(), ".cache/migrate-egghead");
 const PROJECT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CURSOR_CACHE_PATH =
+  process.env.ME_CURSOR_FILE ?? path.join(ME_CACHE_DIR, "analysis_cursor.json");
+const CURSOR_MAX_HOURS = Number(process.env.ME_CURSOR_MAX_HOURS ?? "168"); // 7d guardrail
 
 const DEFAULT_REPOS = ["migrate-egghead", "egghead-next", "egghead-rails"] as const;
 
@@ -96,6 +99,10 @@ Global options:
 Commands:
   check
   sync
+  analysis full [--compare] [--advance] [--no-advance]
+  cursor show
+  cursor set <iso>
+  cursor clear
   issues list [repo]
   labels ensure
   project add <ref...>
@@ -226,6 +233,125 @@ function safeJsonParse<T>(text: string, context: string): T {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to parse JSON (${context}): ${msg}\n---\n${text.slice(0, 2000)}`);
   }
+}
+
+type AnalysisCursor = {
+  version: 1;
+  updatedAt: string;
+  lastSince?: string;
+  lastUntil: string;
+};
+
+function readCursor(): AnalysisCursor | null {
+  try {
+    if (!fs.existsSync(CURSOR_CACHE_PATH)) return null;
+    const raw = fs.readFileSync(CURSOR_CACHE_PATH, "utf8");
+    const json = JSON.parse(raw) as AnalysisCursor;
+    if (json?.version !== 1) return null;
+    if (!json.lastUntil) return null;
+    if (!Number.isFinite(Date.parse(json.lastUntil))) return null;
+    return json;
+  } catch {
+    return null;
+  }
+}
+
+function writeCursor(cursor: AnalysisCursor): void {
+  fs.mkdirSync(path.dirname(CURSOR_CACHE_PATH), { recursive: true });
+  fs.writeFileSync(CURSOR_CACHE_PATH, JSON.stringify(cursor, null, 2));
+}
+
+function clearCursor(): void {
+  if (fs.existsSync(CURSOR_CACHE_PATH)) fs.unlinkSync(CURSOR_CACHE_PATH);
+}
+
+type EffectiveTimeRange = {
+  source: "explicit" | "cursor" | "hours";
+  hours: number;
+  since: string;
+  until: string;
+  cursorPath: string;
+  cursorUsed: boolean;
+  cursorClamped: boolean;
+  cursorOriginalSince?: string;
+};
+
+function computeHours(sinceIso: string, untilIso: string): number {
+  const sinceMs = Date.parse(sinceIso);
+  const untilMs = Date.parse(untilIso);
+  if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs)) return 0;
+  const diffMs = Math.max(0, untilMs - sinceMs);
+  return diffMs / (60 * 60 * 1000);
+}
+
+function computeSinceFromHours(hours: number, untilIso: string): string {
+  const untilMs = Date.parse(untilIso);
+  if (!Number.isFinite(untilMs)) die(`Invalid until time: ${untilIso}`);
+  return new Date(untilMs - hours * 60 * 60 * 1000).toISOString();
+}
+
+function getEffectiveTimeRange(opts: GlobalOpts): EffectiveTimeRange {
+  const now = new Date().toISOString();
+
+  // Explicit since/until always wins.
+  if (opts.since || opts.until) {
+    const tr = normalizeTimeRange(opts);
+    const since = tr.since ?? computeSinceFromHours(tr.hours, tr.until ?? now);
+    const until = tr.until ?? now;
+    return {
+      source: "explicit",
+      hours: computeHours(since, until),
+      since,
+      until,
+      cursorPath: CURSOR_CACHE_PATH,
+      cursorUsed: false,
+      cursorClamped: false,
+    };
+  }
+
+  // Cursor-driven window if available.
+  const cursor = readCursor();
+  if (cursor?.lastUntil) {
+    const since0 = new Date(Date.parse(cursor.lastUntil)).toISOString();
+    const until0 = now;
+    const hours0 = computeHours(since0, until0);
+    const maxHours = Number.isFinite(CURSOR_MAX_HOURS) && CURSOR_MAX_HOURS > 0 ? CURSOR_MAX_HOURS : 168;
+    if (hours0 > maxHours) {
+      const since = computeSinceFromHours(maxHours, until0);
+      return {
+        source: "cursor",
+        hours: computeHours(since, until0),
+        since,
+        until: until0,
+        cursorPath: CURSOR_CACHE_PATH,
+        cursorUsed: true,
+        cursorClamped: true,
+        cursorOriginalSince: since0,
+      };
+    }
+    return {
+      source: "cursor",
+      hours: hours0,
+      since: since0,
+      until: until0,
+      cursorPath: CURSOR_CACHE_PATH,
+      cursorUsed: true,
+      cursorClamped: false,
+    };
+  }
+
+  // Fallback: hours window.
+  const until = now;
+  const since = computeSinceFromHours(opts.hours, until);
+  return {
+    source: "hours",
+    hours: opts.hours,
+    since,
+    until,
+    cursorPath: CURSOR_CACHE_PATH,
+    cursorUsed: false,
+    cursorClamped: false,
+  };
 }
 
 function normalizeTimeRange(opts: GlobalOpts): { hours: number; since?: string; until?: string } {
@@ -750,7 +876,7 @@ async function runLogBeastRaw(apl: string, opts: GlobalOpts): Promise<any> {
   return safeJsonParse<any>(r.stdout, "log-beast raw");
 }
 
-async function cmdLogsStory(opts: GlobalOpts): Promise<void> {
+async function getLogsStoryResult(opts: GlobalOpts): Promise<any> {
   // Story pack: a handful of fixed queries that quantify the perf narrative.
   const filter = `["request.host"] startswith "egghead.io"`;
   const structured = `["message"] startswith "{"`;
@@ -809,7 +935,7 @@ async function cmdLogsStory(opts: GlobalOpts): Promise<void> {
     runLogBeastRaw(qLessonGraphqlErrorSlugs, opts),
   ]);
 
-  const result = {
+  return {
     hours: timeRange.hours,
     since: timeRange.since,
     until: timeRange.until,
@@ -823,6 +949,10 @@ async function cmdLogsStory(opts: GlobalOpts): Promise<void> {
     lessonGraphqlErrorStats: parseBucketsToRows(lessonGraphqlErrorStats.data.result)[0] ?? null,
     lessonGraphqlErrorSlugs: parseBucketsToRows(lessonGraphqlErrorSlugs.data.result),
   };
+}
+
+async function cmdLogsStory(opts: GlobalOpts): Promise<void> {
+  const result = await getLogsStoryResult(opts);
 
   if (opts.format === "json") {
     console.log(JSON.stringify(result));
@@ -852,6 +982,201 @@ async function cmdLogsTrace(opts: GlobalOpts, requestId: string, passthrough: st
   process.exit(exitCode);
 }
 
+async function runLogBeastCommand(
+  command: string,
+  tr: EffectiveTimeRange,
+  extraArgs: string[] = [],
+): Promise<any> {
+  if (!fs.existsSync(LOG_BEAST_CLI)) die(`log-beast CLI not found at ${LOG_BEAST_CLI}`);
+  const r = await run(
+    [
+      "bun",
+      "run",
+      LOG_BEAST_CLI,
+      command,
+      "--since",
+      tr.since,
+      "--until",
+      tr.until,
+      "--format",
+      "json",
+      "--quiet",
+      ...extraArgs,
+    ],
+    { quiet: true },
+  );
+  const stdout = r.stdout.trim();
+  if (!stdout) die(`log-beast ${command} returned no output\n${(r.stderr || "").trim()}`);
+
+  // log-beast commands intentionally use non-zero exit codes to signal "bad status"
+  // (e.g. `errors` sets exitCode when error rows exist). For agent workflows, we still
+  // want the JSON payload even when exitCode != 0.
+  const parsed = safeJsonParse<any>(stdout, `log-beast ${command}`);
+  return { ...parsed, exitCode: r.exitCode };
+}
+
+function storyByEvent(story: any): Record<string, any> {
+  const map: Record<string, any> = {};
+  for (const row of story?.eventStats ?? []) {
+    if (!row?.event) continue;
+    map[String(row.event)] = row;
+  }
+  return map;
+}
+
+function asFiniteNumber(v: unknown): number | null {
+  const n = typeof v === "number" ? v : v == null ? NaN : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function diffNumber(now: unknown, prev: unknown): { now: number | null; prev: number | null; delta: number | null } {
+  const nn = asFiniteNumber(now);
+  const pp = asFiniteNumber(prev);
+  const d = nn != null && pp != null ? nn - pp : null;
+  return { now: nn, prev: pp, delta: d };
+}
+
+async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> {
+  const compare = args.includes("--compare");
+  const advanceFlag = args.includes("--advance");
+  const noAdvanceFlag = args.includes("--no-advance");
+
+  const tr = getEffectiveTimeRange(opts);
+  const shouldAdvance = noAdvanceFlag ? false : advanceFlag ? true : tr.source !== "explicit";
+
+  const [frontend, backendDashboard, backendErrors] = await Promise.all([
+    runLogBeastCommand("frontend", tr),
+    runLogBeastCommand("dashboard", tr),
+    runLogBeastCommand("errors", tr),
+  ]);
+
+  const storyOpts: GlobalOpts = { ...opts, since: tr.since, until: tr.until, format: "json", quiet: true };
+  const story = await getLogsStoryResult(storyOpts);
+
+  let compareResult: any = null;
+  if (compare) {
+    const windowMs = Date.parse(tr.until) - Date.parse(tr.since);
+    if (Number.isFinite(windowMs) && windowMs > 0) {
+      const prevUntil = tr.since;
+      const prevSince = new Date(Date.parse(prevUntil) - windowMs).toISOString();
+      const prevStory = await getLogsStoryResult({ ...storyOpts, since: prevSince, until: prevUntil });
+
+      const nowBy = storyByEvent(story);
+      const prevBy = storyByEvent(prevStory);
+      const events = Array.from(new Set([...Object.keys(nowBy), ...Object.keys(prevBy)])).sort();
+
+      compareResult = {
+        previousRange: { since: prevSince, until: prevUntil, hours: computeHours(prevSince, prevUntil) },
+        deltas: {
+          structured_pct: diffNumber(story?.coverage?.structured_pct, prevStory?.coverage?.structured_pct),
+          search_hit_rate: diffNumber(story?.searchCache?.hit_rate, prevStory?.searchCache?.hit_rate),
+          trpc_feature_flag_pct: diffNumber(story?.trpcTax?.feature_flag_pct, prevStory?.trpcTax?.feature_flag_pct),
+        },
+        eventDeltas: events.map(ev => ({
+          event: ev,
+          calls: diffNumber(nowBy[ev]?.calls, prevBy[ev]?.calls),
+          avg_ms: diffNumber(nowBy[ev]?.avg_ms, prevBy[ev]?.avg_ms),
+          p95_ms: diffNumber(nowBy[ev]?.p95_ms, prevBy[ev]?.p95_ms),
+          errors: diffNumber(nowBy[ev]?.errors, prevBy[ev]?.errors),
+        })),
+      };
+    }
+  }
+
+  const ghRate = await run(["gh", "api", "rate_limit", "--jq", ".resources.graphql | {limit,remaining,reset}"], { quiet: true });
+  const ghRateJson = ghRate.exitCode === 0 ? safeJsonParse<any>(ghRate.stdout, "gh api rate_limit") : null;
+
+  const result = {
+    timeRange: tr,
+    cursor: {
+      path: CURSOR_CACHE_PATH,
+      used: tr.cursorUsed,
+      clamped: tr.cursorClamped,
+      originalSince: tr.cursorOriginalSince,
+      maxHours: CURSOR_MAX_HOURS,
+      shouldAdvance,
+    },
+    frontend,
+    backend: {
+      dashboard: backendDashboard,
+      errors: backendErrors,
+    },
+    story,
+    compare: compareResult,
+    gh: { graphqlRate: ghRateJson },
+  };
+
+  if (shouldAdvance) {
+    writeCursor({
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      lastSince: tr.since,
+      lastUntil: tr.until,
+    });
+  }
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  console.log(`analysis full: ${tr.since} -> ${tr.until} (${tr.hours.toFixed(2)}h) [${tr.source}]`);
+  if (tr.cursorUsed) console.log(`cursor: ${CURSOR_CACHE_PATH}${tr.cursorClamped ? " (clamped)" : ""}`);
+  console.log(
+    `frontend cache hitRate=${frontend?.data?.cache?.hitRate ?? "?"}% missRate=${frontend?.data?.cache?.missRate ?? "?"}% 500s=${(frontend?.data?.statusCodes ?? []).find((s: any) => s.status === 500)?.count ?? "?"}`,
+  );
+  console.log(
+    `backend totalEvents=${backendDashboard?.data?.totalEvents ?? "?"} activeWorkers=${backendDashboard?.data?.activeWorkers ?? "?"}`,
+  );
+  console.log(`structured coverage=${story?.coverage?.structured_pct?.toFixed?.(1) ?? "?"}%`);
+  console.log(
+    `search hit_rate=${story?.searchCache?.hit_rate?.toFixed?.(2) ?? "?"}% trpc feature_flag_pct=${story?.trpcTax?.feature_flag_pct?.toFixed?.(1) ?? "?"}%`,
+  );
+}
+
+async function cmdCursorShow(opts: GlobalOpts): Promise<void> {
+  const c = readCursor();
+  const result = { cursorPath: CURSOR_CACHE_PATH, exists: Boolean(c), cursor: c };
+  if (opts.format === "json") {
+    console.log(JSON.stringify(result));
+    return;
+  }
+  console.log(`cursor: ${CURSOR_CACHE_PATH}`);
+  if (!c) {
+    console.log("(missing)");
+    return;
+  }
+  console.log(`lastUntil: ${c.lastUntil}`);
+}
+
+async function cmdCursorSet(opts: GlobalOpts, iso: string): Promise<void> {
+  if (!iso) die("cursor set: missing <iso>");
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) die(`cursor set: invalid ISO time: ${iso}`);
+  const until = new Date(ms).toISOString();
+  const cursor: AnalysisCursor = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    lastUntil: until,
+  };
+  writeCursor(cursor);
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify({ ok: true, cursorPath: CURSOR_CACHE_PATH, cursor }));
+    return;
+  }
+  console.log(`cursor set: ${until}`);
+}
+
+async function cmdCursorClear(opts: GlobalOpts): Promise<void> {
+  clearCursor();
+  if (opts.format === "json") {
+    console.log(JSON.stringify({ ok: true, cursorPath: CURSOR_CACHE_PATH, cleared: true }));
+    return;
+  }
+  console.log("cursor cleared");
+}
+
 async function cmdSync(opts: GlobalOpts): Promise<void> {
   await cmdLabelsEnsure(opts);
   await cmdProjectAdd(opts, PROJECT_SYNC_URLS);
@@ -868,6 +1193,13 @@ async function main(): Promise<void> {
 
   if (cmd === "check") return cmdCheck(opts);
   if (cmd === "sync") return cmdSync(opts);
+
+  if (cmd === "analysis" && sub === "full") return cmdAnalysisFull(opts, args);
+  if (cmd === "full-analysis") return cmdAnalysisFull(opts, ["--compare"]);
+
+  if (cmd === "cursor" && sub === "show") return cmdCursorShow(opts);
+  if (cmd === "cursor" && sub === "set") return cmdCursorSet(opts, args[0]);
+  if (cmd === "cursor" && sub === "clear") return cmdCursorClear(opts);
 
   if (cmd === "issues" && sub === "list") return cmdIssuesList(opts, args[0]);
   if (cmd === "labels" && sub === "ensure") return cmdLabelsEnsure(opts);
