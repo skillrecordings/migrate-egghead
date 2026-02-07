@@ -521,6 +521,34 @@ function buildSchemas() {
     })
     .passthrough();
 
+  const WorkerOutputSchema = z
+    .object({
+      ok: z.boolean(),
+      summary: z.string(),
+      code_paths: z.array(
+        z
+          .object({
+            path: z.string(),
+            why: z.string(),
+          })
+          .strict(),
+      ),
+      hypotheses: z.array(
+        z
+          .object({
+            name: z.string(),
+            evidence: z.string(),
+            next_step: z.string(),
+          })
+          .strict(),
+      ),
+      quick_wins: z.array(z.string()).optional(),
+      next_steps: z.array(z.string()),
+      open_questions: z.array(z.string()).optional(),
+      notes: z.string().optional(),
+    })
+    .strict();
+
   return {
     DateTime,
     AnalysisCursorSchema,
@@ -535,6 +563,7 @@ function buildSchemas() {
     LogBeastFrontendSchema,
     LogBeastDashboardSchema,
     LogBeastErrorsSchema,
+    WorkerOutputSchema,
   };
 }
 
@@ -1269,6 +1298,14 @@ async function cmdWorkersRun(opts: GlobalOpts, args: string[]): Promise<void> {
       let err: string | undefined;
       try {
         parsed = JSON.parse(raw);
+        const { WorkerOutputSchema } = getSchemas();
+        const validated = WorkerOutputSchema.safeParse(parsed);
+        if (!validated.success) {
+          ok = false;
+          err = `Worker output did not match schema:\n${formatZodIssues(validated.error?.issues ?? [], 8)}`;
+        } else {
+          parsed = validated.data;
+        }
       } catch (e) {
         ok = false;
         const msg = e instanceof Error ? e.message : String(e);
