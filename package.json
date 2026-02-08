@@ -1,0 +1,14 @@
+{
+  "name": "migrate-egghead",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "me": "bun tools/me.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

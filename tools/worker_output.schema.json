@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "migrate-egghead Worker Output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "summary", "code_paths", "hypotheses", "next_steps"],
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "Whether the worker believes the investigation completed successfully."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Tight human-readable summary of what was found."
+    },
+    "code_paths": {
+      "type": "array",
+      "description": "Concrete code entry points related to the issue.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "why"],
+        "properties": {
+          "path": { "type": "string", "description": "File path or symbol reference." },
+          "why": { "type": "string", "description": "Why this path matters." }
+        }
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "description": "Likely root causes with evidence and the next falsifiable step.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "evidence", "next_step"],
+        "properties": {
+          "name": { "type": "string" },
+          "evidence": { "type": "string" },
+          "next_step": { "type": "string" }
+        }
+      }
+    },
+    "quick_wins": {
+      "type": "array",
+      "description": "Safe, high-value changes that should be easy to implement.",
+      "items": { "type": "string" }
+    },
+    "next_steps": {
+      "type": "array",
+      "description": "Actionable follow-ups for the coordinator/implementer.",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Questions that block certainty or require human input.",
+      "items": { "type": "string" }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional extra context."
+    }
+  }
+}
+
