@@ -13,6 +13,15 @@ Second directive: **USE THE ORG PROJECT**.
 - Add issues: `bun tools/me.ts project add egghead-next:1564 migrate-egghead:21`
 - Refs: prefer `repo:num` (not `repo#num`) because `#` becomes a comment in some shells/runners.
 
+Third directive: **CANARY DEPLOYS ARE REAL** (egghead-next on Vercel).
+
+- There can be multiple `READY` production deployments while traffic is split/rolling.
+- Don’t assume `vercel inspect egghead.io` == “latest prod”.
+- Use: `bun tools/me.ts deploy status --json | jq .` (shows current alias vs latest READY prod).
+- Use: `bun tools/me.ts logs deployments -h 2 --json | jq .` (shows actual prod traffic split by `deploymentId`).
+- Use: `bun tools/me.ts logs route-errors "/courses/[course]" -h 24 --json | jq .` (5xx split by `deploymentId`).
+- For analysis anchored to the canary window: `bun tools/me.ts analysis full --since-deploy latest-prod --compare --json | jq .`
+
 ---
 
 # Agent Instructions for migrate-egghead
@@ -590,6 +599,9 @@ Sources for CLI conventions:
 # Verify environment (gh scopes, log-beast path, AGENT_AXIOM_TOKEN)
 bun tools/me.ts check
 
+# Canary-aware: current alias vs latest READY prod
+bun tools/me.ts deploy status --json | jq .
+
 # Full investigation pack (frontend + backend + structured story)
 # Uses a cursor by default so agents analyze "since last time" without guessing.
 bun tools/me.ts analysis full --json | jq .
@@ -599,6 +611,9 @@ bun tools/me.ts analysis full --json --compare | jq .
 
 # Since current production deploy (uses Vercel CLI via egghead-next/)
 bun tools/me.ts analysis full --since-deploy --compare --comment-pack --json | jq '.comment.results'
+
+# Canary-aware: since latest READY production deploy (often the canary)
+bun tools/me.ts analysis full --since-deploy latest-prod --compare --comment-pack --json | jq '.comment.results'
 
 # Post a tight markdown summary onto an issue (idempotent by time-window marker)
 bun tools/me.ts analysis full --json --compare --comment migrate-egghead:21 | jq '.comment.results'
@@ -612,6 +627,13 @@ bun tools/me.ts sync
 
 # Structured-log story pack (agent-readable JSON)
 bun tools/me.ts logs story -h 24 --json | jq .
+
+# Canary-aware: who is serving prod traffic (deploymentId split)
+bun tools/me.ts logs deployments -h 2 --json | jq .
+
+# Canary-aware: route errors split by deploymentId
+bun tools/me.ts logs route-errors "/courses/[course]" -h 24 --json | jq .
+bun tools/me.ts logs route-errors "/courses/[course]" --since-deploy latest-prod --json | jq .
 
 # Add individual items to project #4 (use : not #)
 bun tools/me.ts project add egghead-next:1561 migrate-egghead:21

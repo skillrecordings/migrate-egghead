@@ -187,12 +187,22 @@ function getHelpSpec(): HelpSpec {
       { command: "check", description: "Verify gh scopes, log-beast path, env vars, deps", examples: ["bun tools/me.ts check --json | jq ."] },
       { command: "sync", description: "Ensure labels and add mapped issues to org project", examples: ["bun tools/me.ts sync --json | jq ."] },
       {
+        command: "deploy status",
+        args: "[ref]",
+        description: "Show current prod alias vs latest READY production (canary-aware)",
+        examples: [
+          "bun tools/me.ts deploy status --json | jq .",
+          "bun tools/me.ts deploy status egghead.io --json | jq .",
+        ],
+      },
+      {
         command: "analysis full",
         args: "[--since-deploy [ref]] [--compare] [--comment-pack] [--comment <issueRef>] [--advance] [--no-advance]",
         description: "Full investigation pack (frontend+backend+story), cursor-aware and idempotent comments",
         examples: [
           "bun tools/me.ts analysis full --json | jq .",
           "bun tools/me.ts analysis full --since-deploy --compare --comment-pack --json | jq '.comment.results'",
+          "bun tools/me.ts analysis full --since-deploy latest-prod --compare --json | jq .",
         ],
       },
       { command: "cursor show", description: "Show analysis cursor", examples: ["bun tools/me.ts cursor show --json | jq ."] },
@@ -204,6 +214,16 @@ function getHelpSpec(): HelpSpec {
       { command: "project list", args: "[Todo|In Progress|Done]", description: "List org project items", examples: ["bun tools/me.ts project list \"Todo\" --json | jq '.items | length'"] },
       { command: "project status", args: "<ref> <Todo|In Progress|Done>", description: "Move an item across Status", examples: ["bun tools/me.ts project status egghead-next:1564 \"In Progress\" --json | jq ."] },
       { command: "logs story", description: "Structured log story pack (frontend)", examples: ["bun tools/me.ts logs story -h 24 --json | jq ."] },
+      { command: "logs deployments", description: "Canary-aware breakdown: requests by Vercel deploymentId", examples: ["bun tools/me.ts logs deployments -h 2 --json | jq ."] },
+      {
+        command: "logs route-errors",
+        args: "<route> [--since-deploy [ref]]",
+        description: "Canary-aware breakdown: route 5xx errors by deploymentId (optionally since a deploy)",
+        examples: [
+          "bun tools/me.ts logs route-errors \"/courses/[course]\" -h 24 --json | jq .",
+          "bun tools/me.ts logs route-errors \"/courses/[course]\" --since-deploy latest-prod --json | jq .",
+        ],
+      },
       { command: "logs trace", args: "<request_id>", description: "Pass-through trace helper (uses log-beast trace)", examples: ["bun tools/me.ts logs trace <uuid> -h 24"] },
       { command: "workers run", args: "<issueRef...> [--max-parallel <n>]", description: "Spawn parallel read-only workers (codex exec) with schema-validated outputs", examples: ["bun tools/me.ts workers run egghead-next:1564 egghead-next:1556 --max-parallel 2 --json | jq ."] },
       { command: "help", description: "Print help (use --json for machine-readable spec)", examples: ["bun tools/me.ts help --json | jq ."] },
@@ -646,6 +666,29 @@ function buildSchemas() {
     })
     .passthrough();
 
+  const VercelListSchema = z
+    .object({
+      deployments: z.array(
+        z
+          .object({
+            url: z.string(),
+            createdAt: z.number(),
+            state: z.string().optional(),
+            target: z.string().optional(),
+            creator: z
+              .object({
+                uid: z.string().optional(),
+                username: z.string().optional(),
+              })
+              .passthrough()
+              .optional(),
+            meta: z.record(z.string(), z.unknown()).optional(),
+          })
+          .passthrough(),
+      ),
+    })
+    .passthrough();
+
   const WorkerOutputSchema = z
     .object({
       ok: z.boolean(),
@@ -689,6 +732,7 @@ function buildSchemas() {
     LogBeastDashboardSchema,
     LogBeastErrorsSchema,
     VercelInspectSchema,
+    VercelListSchema,
     WorkerOutputSchema,
   };
 }
@@ -1682,7 +1726,10 @@ async function getLogsStoryResult(opts: GlobalOpts): Promise<any> {
   const filter = `["request.host"] startswith "egghead.io"`;
   const structured = `["message"] startswith "{"`;
 
-  const timeRange = normalizeTimeRange(opts);
+  const timeRange0 = normalizeTimeRange(opts);
+  const until = timeRange0.until ?? new Date().toISOString();
+  const since = timeRange0.since ?? computeSinceFromHours(timeRange0.hours, until);
+  const hours = computeHours(since, until);
   const qCoverage = `["vercel"] | where ${filter} and ["vercel.source"] == "lambda" | summarize total=count(), structured=countif(${structured}) | extend structured_pct=100.0 * todouble(structured) / todouble(total)`;
 
   const events = [
@@ -1700,7 +1747,11 @@ async function getLogsStoryResult(opts: GlobalOpts): Promise<any> {
 
   const qEventStats = `["vercel"] | where ${filter} and ["vercel.source"] == "lambda" and ${structured} | extend msg=parse_json(["message"]) | where tostring(msg.event) in (${eventList}) | extend duration_ms=todouble(msg.duration_ms) | extend is_error=isnotnull(msg.error_message) or isnotnull(msg.error) or tostring(msg.ok) == "false" | summarize calls=count(), avg_ms=avg(duration_ms), p95_ms=percentile(duration_ms, 95), errors=countif(is_error) by event=tostring(msg.event) | order by calls desc`;
 
-  const qSearchCache = `["vercel"] | where ${filter} and ["vercel.source"] == "lambda" and ${structured} | extend msg=parse_json(["message"]) | where tostring(msg.event) == "search_ssr_cache" | summarize hits=countif(tostring(msg.status) == "hit"), misses=countif(tostring(msg.status) == "miss"), errs=countif(tostring(msg.status) == "error"), total=count() | extend hit_rate=100.0 * todouble(hits) / todouble(total)`;
+  // `search_ssr_cache.status` can be: hit|miss|error|skip
+  // We care about:
+  // - hit_rate for *cacheable* requests (excluding skip)
+  // - skip_rate to quantify how much SSR we intentionally avoided
+  const qSearchCache = `["vercel"] | where ${filter} and ["vercel.source"] == "lambda" and ${structured} | extend msg=parse_json(["message"]) | where tostring(msg.event) == "search_ssr_cache" | extend status=tostring(msg.status) | summarize hits=countif(status == "hit"), misses=countif(status == "miss"), errs=countif(status == "error"), skips=countif(status == "skip"), total=count(), cacheable_total=countif(status != "skip") | extend hit_rate=100.0 * todouble(hits) / todouble(cacheable_total) | extend skip_rate=100.0 * todouble(skips) / todouble(total)`;
 
   const qTrpcTax = `["vercel"] | where ${filter} and ["vercel.source"] == "lambda" and ${structured} | extend msg=parse_json(["message"]) | where tostring(msg.event) == "trpc.call" | summarize total=count(), feature_flag=countif(tostring(msg.path) startswith "featureFlag."), with_token=countif(tostring(msg.has_token) == "true") | extend feature_flag_pct=100.0 * todouble(feature_flag) / todouble(total)`;
 
@@ -1737,9 +1788,9 @@ async function getLogsStoryResult(opts: GlobalOpts): Promise<any> {
   ]);
 
   return {
-    hours: timeRange.hours,
-    since: timeRange.since,
-    until: timeRange.until,
+    hours,
+    since,
+    until,
     coverage: parseBucketsToRows(coverage.data.result)[0] ?? null,
     eventStats: parseBucketsToRows(eventStats.data.result),
     searchCache: parseBucketsToRows(searchCache.data.result)[0] ?? null,
@@ -1768,6 +1819,191 @@ async function cmdLogsStory(opts: GlobalOpts): Promise<void> {
     const avg = typeof r.avg_ms === "number" ? `${r.avg_ms.toFixed(0)}ms` : "n/a";
     const p95 = typeof r.p95_ms === "number" ? `${r.p95_ms.toFixed(0)}ms` : "n/a";
     console.log(`- ${r.event}: calls=${r.calls} avg=${avg} p95=${p95} errors=${r.errors}`);
+  }
+}
+
+async function getLogsDeploymentsResult(opts: GlobalOpts): Promise<any> {
+  // Canary-aware: show which Vercel deployments are actually serving prod traffic.
+  // Useful when `egghead.io` alias lags or canary rolls are in progress.
+  const filter = `["request.host"] startswith "egghead.io"`;
+  const q = `["vercel"]
+    | where ${filter} and ["vercel.environment"] == "production" and ["vercel.source"] == "lambda"
+    | summarize requests=count(), errors=countif(["request.statusCode"] >= 500)
+        by deploymentId=tostring(["vercel.deploymentId"]), deploymentURL=tostring(["vercel.deploymentURL"])
+    | order by requests desc`;
+
+  const timeRange0 = normalizeTimeRange(opts);
+  const until = timeRange0.until ?? new Date().toISOString();
+  const since = timeRange0.since ?? computeSinceFromHours(timeRange0.hours, until);
+  const hours = computeHours(since, until);
+  const raw = await runLogBeastRaw(q, opts);
+  const rows = parseBucketsToRows(raw.data.result);
+  const total = rows.reduce((acc: number, r: any) => acc + (typeof r.requests === "number" ? r.requests : Number(r.requests) || 0), 0);
+
+  return {
+    hours,
+    since,
+    until,
+    total_requests: total,
+    deployments: rows.map((r: any) => {
+      const requests = typeof r.requests === "number" ? r.requests : Number(r.requests) || 0;
+      const errors = typeof r.errors === "number" ? r.errors : Number(r.errors) || 0;
+      const pct = total > 0 ? (100.0 * requests) / total : 0;
+      return {
+        deploymentId: r.deploymentId ?? null,
+        deploymentURL: r.deploymentURL ?? null,
+        requests,
+        errors,
+        pct,
+      };
+    }),
+  };
+}
+
+type LogsSinceDeployArgs = { sinceDeploy?: string };
+
+function parseSinceDeployArg(args: string[]): LogsSinceDeployArgs {
+  const res: LogsSinceDeployArgs = { sinceDeploy: undefined };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--since-deploy") {
+      const next = args[i + 1];
+      if (!next || next.startsWith("-")) {
+        res.sinceDeploy = "egghead.io";
+      } else {
+        res.sinceDeploy = next;
+        i++;
+      }
+    }
+  }
+  return res;
+}
+
+async function cmdLogsDeployments(opts: GlobalOpts, args: string[]): Promise<void> {
+  const parsed = parseSinceDeployArg(args);
+  let effectiveOpts: GlobalOpts = opts;
+  let deploy: { ref: string; since: string } | null = null;
+  if (parsed.sinceDeploy) {
+    if (opts.since) die("logs deployments: do not pass both --since and --since-deploy");
+    const since = await getVercelDeploymentCreatedAtIso(parsed.sinceDeploy);
+    deploy = { ref: parsed.sinceDeploy, since };
+    effectiveOpts = { ...opts, since };
+  }
+
+  const result = await getLogsDeploymentsResult(effectiveOpts);
+  const out = { ...result, deploy };
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify(out));
+    return;
+  }
+
+  if (deploy) console.log(`since deploy: ${deploy.ref} (since=${deploy.since})`);
+  console.log(`deployments (prod lambda) ${out.since} -> ${out.until} (${out.hours.toFixed(2)}h)`);
+  console.log(`total requests: ${out.total_requests}`);
+  console.log("");
+  for (const r of (out.deployments ?? []).slice(0, 10)) {
+    const pct = typeof r.pct === "number" ? `${r.pct.toFixed(1)}%` : "n/a";
+    const id = r.deploymentId ? String(r.deploymentId) : "(null)";
+    const url = r.deploymentURL ? String(r.deploymentURL) : "(null)";
+    console.log(`- ${pct} requests=${r.requests} errors=${r.errors} id=${id} url=${url}`);
+  }
+}
+
+async function getLogsRouteErrorsResult(opts: GlobalOpts, route: string): Promise<any> {
+  if (!route) die("logs route-errors: missing <route> (example: /courses/[course])");
+  const filter = `["request.host"] startswith "egghead.io"`;
+  const q = `["vercel"]
+    | where ${filter} and ["vercel.environment"] == "production" and ["vercel.source"] == "lambda"
+    | where tostring(["vercel.route"]) == "${route.replace(/"/g, '\\"')}"
+    | summarize requests=count(), errors=countif(["request.statusCode"] >= 500),
+        errors_500=countif(["request.statusCode"] == 500),
+        errors_504=countif(["request.statusCode"] == 504)
+        by deploymentId=tostring(["vercel.deploymentId"]), deploymentURL=tostring(["vercel.deploymentURL"])
+    | order by errors desc`;
+
+  const timeRange0 = normalizeTimeRange(opts);
+  const until = timeRange0.until ?? new Date().toISOString();
+  const since = timeRange0.since ?? computeSinceFromHours(timeRange0.hours, until);
+  const hours = computeHours(since, until);
+  const raw = await runLogBeastRaw(q, opts);
+  const rows = parseBucketsToRows(raw.data.result);
+
+  const totals = rows.reduce(
+    (acc: any, r: any) => {
+      const req = typeof r.requests === "number" ? r.requests : Number(r.requests) || 0;
+      const err = typeof r.errors === "number" ? r.errors : Number(r.errors) || 0;
+      acc.requests += req;
+      acc.errors += err;
+      return acc;
+    },
+    { requests: 0, errors: 0 },
+  );
+
+  return {
+    hours,
+    since,
+    until,
+    route,
+    total_requests: totals.requests,
+    total_errors: totals.errors,
+    deployments: rows.map((r: any) => {
+      const requests = typeof r.requests === "number" ? r.requests : Number(r.requests) || 0;
+      const errors = typeof r.errors === "number" ? r.errors : Number(r.errors) || 0;
+      const pct = totals.errors > 0 ? (100.0 * errors) / totals.errors : 0;
+      return {
+        deploymentId: r.deploymentId ?? null,
+        deploymentURL: r.deploymentURL ?? null,
+        requests,
+        errors,
+        errors_500: typeof r.errors_500 === "number" ? r.errors_500 : Number(r.errors_500) || 0,
+        errors_504: typeof r.errors_504 === "number" ? r.errors_504 : Number(r.errors_504) || 0,
+        error_pct: pct,
+      };
+    }),
+  };
+}
+
+type LogsRouteErrorsArgs = { route: string; sinceDeploy?: string };
+
+function parseLogsRouteErrorsArgs(args: string[]): LogsRouteErrorsArgs {
+  const parsed = parseSinceDeployArg(args);
+  const positional = args.filter(a => a && !a.startsWith("-"));
+  const route = positional[0];
+  if (!route) die("logs route-errors: missing <route> (example: /courses/[course])");
+  return { route, sinceDeploy: parsed.sinceDeploy };
+}
+
+async function cmdLogsRouteErrors(opts: GlobalOpts, args: string[]): Promise<void> {
+  const parsed = parseLogsRouteErrorsArgs(args);
+  let effectiveOpts: GlobalOpts = opts;
+  let deploy: { ref: string; since: string } | null = null;
+  if (parsed.sinceDeploy) {
+    if (opts.since) die("logs route-errors: do not pass both --since and --since-deploy");
+    const since = await getVercelDeploymentCreatedAtIso(parsed.sinceDeploy);
+    deploy = { ref: parsed.sinceDeploy, since };
+    effectiveOpts = { ...opts, since };
+  }
+
+  const result = await getLogsRouteErrorsResult(effectiveOpts, parsed.route);
+  const out = { ...result, deploy };
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify(out));
+    return;
+  }
+
+  if (deploy) console.log(`since deploy: ${deploy.ref} (since=${deploy.since})`);
+  console.log(`route errors ${out.route} ${out.since} -> ${out.until} (${out.hours.toFixed(2)}h)`);
+  console.log(`total errors: ${out.total_errors} (requests: ${out.total_requests})`);
+  console.log("");
+  for (const r of (out.deployments ?? []).slice(0, 10)) {
+    const pct = typeof r.error_pct === "number" ? `${r.error_pct.toFixed(1)}%` : "n/a";
+    const id = r.deploymentId ? String(r.deploymentId) : "(null)";
+    const url = r.deploymentURL ? String(r.deploymentURL) : "(null)";
+    console.log(
+      `- ${pct} errors=${r.errors} (500=${r.errors_500},504=${r.errors_504}) requests=${r.requests} id=${id} url=${url}`,
+    );
   }
 }
 
@@ -1915,6 +2151,7 @@ function normalizeVercelInspectTarget(ref: string): string {
 
   const s = s0.toLowerCase();
   if (s === "prod" || s === "production" || s === "main" || s === "egghead.io") return "egghead.io";
+  // NOTE: "latest-prod"/"canary" are handled upstream. They are not valid `vercel inspect` targets.
 
   // Vercel UI URL: https://vercel.com/<team>/<project>/<deploymentId>
   // We can inspect via `dpl_<id>`.
@@ -1936,7 +2173,24 @@ function normalizeVercelInspectTarget(ref: string): string {
   return s0; // hostnames like egghead.io or *.vercel.app
 }
 
-async function getVercelDeploymentCreatedAtIso(ref: string): Promise<string> {
+function epochToIso(value: number): { ms: number; iso: string } {
+  if (!Number.isFinite(value) || value <= 0) {
+    die(`Invalid epoch time: ${String(value)}`);
+  }
+  const ms = value > 1e12 ? value : value * 1000;
+  return { ms, iso: new Date(ms).toISOString() };
+}
+
+type VercelInspectInfo = {
+  id?: string;
+  url?: string;
+  target?: string | null;
+  readyState?: string;
+  createdAtMs: number;
+  createdAtIso: string;
+};
+
+async function getVercelInspectInfo(ref: string): Promise<VercelInspectInfo> {
   if (!fs.existsSync(EGGHEAD_NEXT_DIR)) {
     die(`Missing submodule path: ${EGGHEAD_NEXT_DIR}\n` + `Hint: run from repo root or ensure submodules are present.`);
   }
@@ -1972,12 +2226,138 @@ async function getVercelDeploymentCreatedAtIso(ref: string): Promise<string> {
   const schemas = getSchemas();
   const parsed = safeJsonParseZod<any>(r.stdout, schemas.VercelInspectSchema, "vercel inspect");
   const createdAtNum = typeof parsed.createdAt === "number" ? parsed.createdAt : Number(parsed.createdAt);
-  if (!Number.isFinite(createdAtNum) || createdAtNum <= 0) {
-    die(`vercel inspect returned invalid createdAt: ${String(parsed.createdAt)}`);
+  const { ms, iso } = epochToIso(createdAtNum);
+
+  return {
+    id: parsed.id,
+    url: parsed.url,
+    target: parsed.target,
+    readyState: parsed.readyState,
+    createdAtMs: ms,
+    createdAtIso: iso,
+  };
+}
+
+type VercelListDeploymentInfo = {
+  url: string;
+  state?: string;
+  target?: string;
+  createdAtMs: number;
+  createdAtIso: string;
+  creator?: { username?: string; uid?: string } | null;
+  meta?: Record<string, unknown>;
+};
+
+async function getLatestReadyProductionDeployment(): Promise<VercelListDeploymentInfo> {
+  if (!fs.existsSync(EGGHEAD_NEXT_DIR)) {
+    die(`Missing submodule path: ${EGGHEAD_NEXT_DIR}\n` + `Hint: run from repo root or ensure submodules are present.`);
   }
 
-  const createdMs = createdAtNum > 1e12 ? createdAtNum : createdAtNum * 1000;
-  return new Date(createdMs).toISOString();
+  const token = getVercelToken();
+
+  const cmd = [
+    "vercel",
+    "list",
+    "--environment",
+    "production",
+    "--status",
+    "READY",
+    "--format",
+    "json",
+    "--scope",
+    DEFAULT_VERCEL_SCOPE,
+    "--cwd",
+    EGGHEAD_NEXT_DIR,
+  ];
+  if (token) cmd.push("--token", token);
+
+  const r = await run(cmd, { quiet: true });
+  if (r.exitCode !== 0) {
+    const err = (r.stderr || r.stdout || "").trim();
+    die(
+      `vercel list failed\n` +
+        `- scope: ${DEFAULT_VERCEL_SCOPE}\n` +
+        `- cwd: ${EGGHEAD_NEXT_DIR}\n` +
+        (err ? `---\n${err}\n` : "") +
+        `Hint: if you hit a SAML prompt, set ME_VERCEL_TOKEN/VERCEL_TOKEN for non-interactive agents.\n`,
+    );
+  }
+
+  const schemas = getSchemas();
+  const parsed = safeJsonParseZod<any>(r.stdout, schemas.VercelListSchema, "vercel list");
+  const d0 = parsed.deployments?.[0];
+  if (!d0?.url) die("vercel list returned no deployments (expected at least 1 READY production deployment)");
+
+  const createdAtNum = typeof d0.createdAt === "number" ? d0.createdAt : Number(d0.createdAt);
+  const { ms, iso } = epochToIso(createdAtNum);
+
+  return {
+    url: d0.url,
+    state: d0.state,
+    target: d0.target,
+    createdAtMs: ms,
+    createdAtIso: iso,
+    creator: d0.creator ?? null,
+    meta: d0.meta ?? undefined,
+  };
+}
+
+async function getVercelDeploymentCreatedAtIso(ref: string): Promise<string> {
+  const s = String(ref ?? "").trim().toLowerCase();
+  if (s === "latest-prod" || s === "latest_production" || s === "latest" || s === "canary") {
+    // Canary deploys mean the "current" prod alias can lag the latest READY production deploy.
+    const latest = await getLatestReadyProductionDeployment();
+    return latest.createdAtIso;
+  }
+
+  const inspected = await getVercelInspectInfo(ref);
+  return inspected.createdAtIso;
+}
+
+async function cmdDeployStatus(opts: GlobalOpts, args: string[]): Promise<void> {
+  const ref = args[0] && !args[0].startsWith("-") ? args[0] : "egghead.io";
+
+  const [current, latest] = await Promise.all([
+    getVercelInspectInfo(ref),
+    getLatestReadyProductionDeployment(),
+  ]);
+
+  // Inspect latest to get an id (useful for canary-aware log filtering by deploymentId).
+  const latestInspected = await getVercelInspectInfo(latest.url);
+
+  const result = {
+    ok: true,
+    scope: DEFAULT_VERCEL_SCOPE,
+    current: {
+      ref,
+      id: current.id ?? null,
+      url: current.url ?? null,
+      createdAt: current.createdAtIso,
+      target: current.target ?? null,
+      readyState: current.readyState ?? null,
+    },
+    latestReadyProd: {
+      url: latest.url,
+      id: latestInspected.id ?? null,
+      createdAt: latest.createdAtIso,
+      creator: latest.creator?.username ?? null,
+      state: latest.state ?? null,
+    },
+    sameDeployment: Boolean(current.url && current.url === latest.url),
+    note:
+      "egghead-next uses canary deploys. The current prod alias may lag behind the latest READY production deploy. Use `analysis full --since-deploy latest-prod` when you want the canary window.",
+  };
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  console.log(`current: ${ref} -> ${current.url ?? "?"} createdAt=${current.createdAtIso} id=${current.id ?? "?"}`);
+  console.log(`latest READY prod: ${latest.url} createdAt=${latest.createdAtIso} id=${latestInspected.id ?? "?"} creator=${latest.creator?.username ?? "?"}`);
+  if (!result.sameDeployment) {
+    console.log("note: current != latest (canary/alias lag). Consider: bun tools/me.ts analysis full --since-deploy latest-prod --compare");
+  }
 }
 
 function parseGitHubIssueUrl(issueUrl: string): { owner: string; repo: string; number: number } {
@@ -2075,7 +2455,7 @@ function buildAnalysisCommentBody(analysis: any, marker: string): string {
   lines.push("");
   lines.push("### Structured Story (Lambda JSON Events)");
   lines.push(`- Structured coverage: ${formatPct(story?.coverage?.structured_pct, 1)} (${formatCount(story?.coverage?.structured)}/${formatCount(story?.coverage?.total)})`);
-  lines.push(`- Search SSR cache: hit_rate=${formatPct(story?.searchCache?.hit_rate, 2)} (hit=${formatCount(story?.searchCache?.hits)} miss=${formatCount(story?.searchCache?.misses)})`);
+  lines.push(`- Search SSR cache: hit_rate_cacheable=${formatPct(story?.searchCache?.hit_rate, 2)} (hit=${formatCount(story?.searchCache?.hits)} miss=${formatCount(story?.searchCache?.misses)} err=${formatCount(story?.searchCache?.errs)} cacheable_total=${formatCount(story?.searchCache?.cacheable_total)}) skip_rate=${formatPct(story?.searchCache?.skip_rate, 2)} (skip=${formatCount(story?.searchCache?.skips)} total=${formatCount(story?.searchCache?.total)})`);
   lines.push(`- tRPC feature-flag tax: ${formatPct(story?.trpcTax?.feature_flag_pct, 1)} (${formatCount(story?.trpcTax?.feature_flag)}/${formatCount(story?.trpcTax?.total)})`);
   if (lesson) lines.push(`- lesson.loadLesson.summary: calls=${formatCount(lesson.calls)} avg=${formatMs(lesson.avg_ms)} p95=${formatMs(lesson.p95_ms)}`);
   if (lessonGql) lines.push(`- lesson.loadLessonMetadataFromGraphQL.graphql: calls=${formatCount(lessonGql.calls)} avg=${formatMs(lessonGql.avg_ms)} p95=${formatMs(lessonGql.p95_ms)} errors=${formatCount(lessonGql.errors)}`);
@@ -2094,7 +2474,8 @@ function buildAnalysisCommentBody(analysis: any, marker: string): string {
     lines.push("");
     lines.push("### Deltas (Previous Window)");
     lines.push(`- Structured coverage delta: ${formatPct(compare.deltas.structured_pct?.delta, 2)}`);
-    lines.push(`- Search hit_rate delta: ${formatPct(compare.deltas.search_hit_rate?.delta, 2)}`);
+    lines.push(`- Search hit_rate_cacheable delta: ${formatPct(compare.deltas.search_hit_rate_cacheable?.delta, 2)}`);
+    lines.push(`- Search skip_rate delta: ${formatPct(compare.deltas.search_skip_rate?.delta, 2)}`);
     lines.push(`- tRPC feature-flag pct delta: ${formatPct(compare.deltas.trpc_feature_flag_pct?.delta, 2)}`);
   }
 
@@ -2213,7 +2594,8 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
         previousRange: { since: prevSince, until: prevUntil, hours: computeHours(prevSince, prevUntil) },
         deltas: {
           structured_pct: diffNumber(story?.coverage?.structured_pct, prevStory?.coverage?.structured_pct),
-          search_hit_rate: diffNumber(story?.searchCache?.hit_rate, prevStory?.searchCache?.hit_rate),
+          search_hit_rate_cacheable: diffNumber(story?.searchCache?.hit_rate, prevStory?.searchCache?.hit_rate),
+          search_skip_rate: diffNumber(story?.searchCache?.skip_rate, prevStory?.searchCache?.skip_rate),
           trpc_feature_flag_pct: diffNumber(story?.trpcTax?.feature_flag_pct, prevStory?.trpcTax?.feature_flag_pct),
         },
         eventDeltas: events.map(ev => ({
@@ -2289,7 +2671,7 @@ async function cmdAnalysisFull(opts: GlobalOpts, args: string[]): Promise<void> 
   );
   console.log(`structured coverage=${story?.coverage?.structured_pct?.toFixed?.(1) ?? "?"}%`);
   console.log(
-    `search hit_rate=${story?.searchCache?.hit_rate?.toFixed?.(2) ?? "?"}% trpc feature_flag_pct=${story?.trpcTax?.feature_flag_pct?.toFixed?.(1) ?? "?"}%`,
+    `search hit_rate_cacheable=${story?.searchCache?.hit_rate?.toFixed?.(2) ?? "?"}% skip_rate=${story?.searchCache?.skip_rate?.toFixed?.(2) ?? "?"}% trpc feature_flag_pct=${story?.trpcTax?.feature_flag_pct?.toFixed?.(1) ?? "?"}%`,
   );
 
   if (commentResults.length > 0) {
@@ -2365,6 +2747,8 @@ async function main(): Promise<void> {
   if (cmd === "check") return cmdCheck(opts);
   if (cmd === "sync") return cmdSync(opts);
 
+  if (cmd === "deploy" && sub === "status") return cmdDeployStatus(opts, args);
+
   if (cmd === "analysis" && sub === "full") return cmdAnalysisFull(opts, args);
   if (cmd === "full-analysis") return cmdAnalysisFull(opts, ["--compare"]);
 
@@ -2385,6 +2769,8 @@ async function main(): Promise<void> {
   }
 
   if (cmd === "logs" && sub === "story") return cmdLogsStory(opts);
+  if (cmd === "logs" && sub === "deployments") return cmdLogsDeployments(opts, args);
+  if (cmd === "logs" && sub === "route-errors") return cmdLogsRouteErrors(opts, args);
   if (cmd === "logs" && sub === "trace") return cmdLogsTrace(opts, args[0], args.slice(1));
 
   if (cmd === "workers" && sub === "run") return cmdWorkersRun(opts, args);

@@ -51,6 +51,20 @@ bun tools/me.ts logs story -h 24 --json | jq .
 bun tools/me.ts logs story -h 24 --json | jq .
 ```
 
+### 1.0) Canary/Rolling Deploy Reality (Who’s Serving Traffic?)
+
+```bash
+# Canary-aware: prod traffic split by deploymentId (critical for “is it deployed yet?”)
+bun tools/me.ts logs deployments -h 2 --json | jq .
+
+# Same idea, but anchored to a specific deploy window
+bun tools/me.ts logs deployments --since-deploy latest-prod --json | jq .
+
+# Route-specific error split by deploymentId (quote the route)
+bun tools/me.ts logs route-errors "/courses/[course]" -h 24 --json | jq .
+bun tools/me.ts logs route-errors "/courses/[course]" --since-deploy latest-prod --json | jq .
+```
+
 Use the output to:
 - Update existing issues with exact event names + 24h metrics.
 - Create missing issues (prefer `egghead-next` for implementation, `migrate-egghead` for coordination).
@@ -92,6 +106,10 @@ Use this when you want the story **since the current production deploy** (or a s
 # Since current prod deploy (defaults to egghead.io alias)
 bun tools/me.ts analysis full --since-deploy --compare --json | jq .
 
+# Canary-aware: anchor to the latest READY production deploy (often the canary)
+bun tools/me.ts deploy status --json | jq .
+bun tools/me.ts analysis full --since-deploy latest-prod --compare --json | jq .
+
 # Since a specific deploy (Vercel UI URL or deployment id)
 bun tools/me.ts analysis full --since-deploy https://vercel.com/eggheadio/egghead-io-nextjs/<id> --compare --json | jq .
 
@@ -100,7 +118,9 @@ bun tools/me.ts analysis full --since-deploy --compare --comment-pack --json | j
 ```
 
 Notes:
-- `--since-deploy` uses the `vercel` CLI (`vercel inspect`) under `egghead-next/`.
+- egghead-next uses canary deploys. The `egghead.io` alias may lag behind the latest READY prod deploy.
+- Use `bun tools/me.ts deploy status` to see current alias vs latest READY prod.
+- `--since-deploy` uses the `vercel` CLI (`vercel inspect`) under `egghead-next/` (and `vercel list` for `latest-prod`).
 - For non-interactive agents, set `ME_VERCEL_TOKEN`/`VERCEL_TOKEN` if SAML prompts break CLI auth.
 
 ### 2) Project Hygiene (Org Project #4)
